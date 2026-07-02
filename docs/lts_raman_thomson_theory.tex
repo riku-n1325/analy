@@ -1,0 +1,340 @@
+\documentclass[uplatex,dvipdfmx,11pt]{jsarticle}
+\usepackage{amsmath,amssymb}
+\usepackage{physics}
+\usepackage{siunitx}
+\usepackage{booktabs}
+\usepackage{geometry}
+\geometry{margin=25mm}
+
+\title{LTSラマン校正トムソン散乱解析アプリ\\理論・数式ノート}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{目的}
+
+本資料は、作成したLTS解析アプリケーションで用いている理論式と計算の流れを確認するためのノートである。
+主な対象は、ラマン散乱による検出系の絶対値校正、およびトムソン散乱スペクトルからの電子密度 $n_e$ と電子温度 $T_e$ の算出である。
+
+参照している考え方は、論文 \textit{Raster Thomson scattering in large-scale laser plasmas produced at high repetition rate} の Sec. III および Sec. IV に対応する。
+現在のアプリでは、電子密度の絶対値校正は論文中のラマン校正式に基づく。
+電子温度は、非集団的トムソン散乱のガウス近似から求める。
+論文 Eq. (9) に相当する弱集団・集団的スペクトル密度関数フィットは、現時点では未実装である。
+
+\section{光散乱計測の基本式}
+
+散乱光を検出したときの総カウント数 $N$ は、おおまかに次式で表される。
+
+\begin{equation}
+N
+=
+\left(\frac{I_L}{h\nu_i}\right)
+\Delta V
+\Delta\Omega
+\mu
+\eta
+G
+n
+\frac{d\sigma}{d\Omega}.
+\end{equation}
+
+ここで、$I_L$ はプローブレーザー強度、$h\nu_i$ は入射光子エネルギー、$\Delta V$ は散乱体積、$\Delta\Omega$ は集光立体角、$\mu$ は光学透過率、$\eta$ は量子効率、$G$ は検出器ゲイン、$n$ は散乱粒子密度、$d\sigma/d\Omega$ は微分散乱断面積である。
+
+実験装置に依存する量を装置定数 $k$ としてまとめると、
+
+\begin{equation}
+N = k n \frac{d\sigma}{d\Omega}
+\end{equation}
+
+と書ける。
+
+\section{トムソン散乱信号と電子密度}
+
+トムソン散乱では散乱粒子は自由電子である。
+トムソン散乱スペクトル全体の総カウント数を $N_T$ とすると、
+
+\begin{equation}
+N_T = k n_e \frac{d\sigma_T}{d\Omega}
+\end{equation}
+
+である。
+したがって、装置定数 $k$ が既知であれば、
+
+\begin{equation}
+n_e =
+\frac{N_T}
+{k (d\sigma_T/d\Omega)}
+\end{equation}
+
+により電子密度を求められる。
+
+論文では、プローブビームに垂直な方向の散乱に対して
+
+\begin{equation}
+\frac{d\sigma_T}{d\Omega}=r_e^2
+\end{equation}
+
+を用いている。
+古典電子半径は
+
+\begin{equation}
+r_e = 2.818 \times 10^{-15} \ \mathrm{m}
+\end{equation}
+
+であり、
+
+\begin{equation}
+r_e^2 \simeq 7.94 \times 10^{-30} \ \mathrm{m^2}
+\end{equation}
+
+である。
+アプリでは、この値を \texttt{TS断面積} の初期値としているが、ユーザーが自由に変更できる。
+
+\section{ラマン散乱による装置定数の決定}
+
+ラマン散乱の回転遷移 $J\to J'$ について、検出カウント数は
+
+\begin{equation}
+N_{J\to J'}
+=
+k n_J
+\frac{d\sigma_{J\to J'}}{d\Omega}
+\end{equation}
+
+である。
+
+論文では、室温で見えるStokes側の回転ラマン線を足し合わせ、
+
+\begin{equation}
+N_{\mathrm{Stokes}}
+=
+k n_{\mathrm{gas}} \sigma_{\mathrm{Stokes}}
+\end{equation}
+
+としている。
+窒素分子のStokes線総和に対して、論文では
+
+\begin{equation}
+\sigma_{\mathrm{Stokes}}
+=
+3.82 \times 10^{-34} \ \mathrm{m^2}
+\end{equation}
+
+を用いている。
+
+したがって装置定数は、
+
+\begin{equation}
+k =
+\frac{N_{\mathrm{Stokes}}}
+{n_{\mathrm{gas}}\sigma_{\mathrm{Stokes}}}
+\end{equation}
+
+で求められる。
+
+アプリでは、\texttt{ラマン有効断面積} の初期値として $3.82\times10^{-34}\ \mathrm{m^2}$ を入れている。
+水素ラマン、別のラマン線、別の偏光配置を使う場合には、この値を対応する値に変更する必要がある。
+
+\section{圧力から中性ガス密度を求める}
+
+中性ガス密度は理想気体近似により
+
+\begin{equation}
+n_{\mathrm{gas}}
+=
+\frac{P}{k_B T_{\mathrm{gas}}}
+\end{equation}
+
+とする。
+アプリでは、圧力 $P$ を \si{Pa}、温度 $T_{\mathrm{gas}}$ を \si{K} で入力する。
+
+\section{ショット数補正}
+
+ラマン測定とトムソン測定で積算ショット数が異なる場合、信号を1ショットあたりに直してから比較する。
+
+\begin{equation}
+N_{\mathrm{Stokes,shot}}
+=
+\frac{A_{\mathrm{Raman}}}
+{N_{\mathrm{shot,Raman}}},
+\end{equation}
+
+\begin{equation}
+N_{T,\mathrm{shot}}
+=
+\frac{A_{\mathrm{TS}}}
+{N_{\mathrm{shot,TS}}}.
+\end{equation}
+
+実装上の電子密度計算は
+
+\begin{equation}
+k =
+\frac{N_{\mathrm{Stokes,shot}}}
+{n_{\mathrm{gas}}\sigma_{\mathrm{Stokes}}},
+\end{equation}
+
+\begin{equation}
+n_e =
+C_{\mathrm{corr}}
+\frac{N_{T,\mathrm{shot}}}
+{k\sigma_T}
+\end{equation}
+
+である。
+ここで $C_{\mathrm{corr}}$ はレーザーエネルギー、透過率、ゲイン、ゲート幅などの差をまとめた補正係数である。
+
+\section{波長ストップで欠けたラマンピーク}
+
+ラマンピーク中心が波長ストップで欠けている場合、見えている部分だけを直接積分すると本来のラマン強度を過小評価する。
+そのため、ストップ範囲をフィット対象から除外し、残った裾からガウス関数を外挿する。
+
+\begin{equation}
+I(x)
+=
+I_0
+\exp\left[
+-\frac{1}{2}
+\left(
+\frac{x-x_0}{\sigma_x}
+\right)^2
+\right]
++ I_{\mathrm{base}}.
+\end{equation}
+
+ガウス面積は
+
+\begin{equation}
+A_{\mathrm{Gauss}}
+=
+I_0\sigma_x\sqrt{2\pi}
+\end{equation}
+
+である。
+波長ストップでピークが欠けている場合、校正には直接積分ではなくガウス面積を使う。
+
+\section{電子温度}
+
+非集団的トムソン散乱では、スペクトル幅は電子の熱運動によるドップラー広がりを反映する。
+波長方向の標準偏差を $\sigma_\lambda$ とすると、アプリでは
+
+\begin{equation}
+T_e[\mathrm{eV}]
+=
+\frac{m_e c^2}{e}
+\left[
+\frac{\sigma_\lambda}
+{2\lambda_i\sin(\theta/2)}
+\right]^2
+\end{equation}
+
+を用いる。
+
+ピクセル幅から波長幅への変換は
+
+\begin{equation}
+\sigma_\lambda
+=
+\sigma_{\mathrm{pixel}}
+\left(\frac{\mathrm{nm}}{\mathrm{pixel}}\right)
+\end{equation}
+
+である。
+装置関数幅 $\sigma_{\mathrm{inst}}$ が分かっている場合は、
+
+\begin{equation}
+\sigma_{\mathrm{physical}}
+=
+\sqrt{
+\sigma_{\mathrm{measured}}^2
+-
+\sigma_{\mathrm{inst}}^2
+}
+\end{equation}
+
+を用いる。
+
+\section{散乱パラメータ}
+
+散乱が非集団的か集団的かの目安として、
+
+\begin{equation}
+\alpha =
+\frac{1}{k_s\lambda_D}
+\end{equation}
+
+を出力する。
+
+散乱波数は
+
+\begin{equation}
+k_s =
+\frac{4\pi\sin(\theta/2)}
+{\lambda_i}
+\end{equation}
+
+であり、デバイ長は
+
+\begin{equation}
+\lambda_D =
+\sqrt{
+\frac{\epsilon_0 k_B T_e}
+{n_e e^2}
+}
+\end{equation}
+
+である。
+ただし、アプリ内部では $T_e$ を \si{eV} として扱うため、エネルギー単位への変換を含めて計算している。
+
+一般に $\alpha\ll1$ なら非集団的散乱に近く、ガウス近似が比較的妥当である。
+$\alpha$ が1に近づく場合、論文 Eq. (9) のようなスペクトル密度関数フィットが必要となる。
+
+\section{ラマン強度の圧力依存性}
+
+同じ光学配置、同じレーザー条件、同じ検出器条件であれば、ラマン散乱強度は散乱分子密度に比例する。
+理想気体近似より
+
+\begin{equation}
+n_{\mathrm{gas}} =
+\frac{P}{k_B T}
+\end{equation}
+
+であるため、温度一定なら
+
+\begin{equation}
+I_{\mathrm{Raman}}
+\propto n_{\mathrm{gas}}
+\propto P
+\end{equation}
+
+となる。
+アプリの \texttt{ラマン圧力依存性} タブでは、各SPEファイルの測定圧力を入力し、ラマンピーク高さまたはガウス面積を圧力に対してプロットする。
+
+\section{フィット評価値}
+
+フィット評価値として
+
+\begin{equation}
+R^2
+=
+1
+-
+\frac{
+\sum_i (y_i - f_i)^2
+}{
+\sum_i (y_i - \bar{y})^2
+}
+\end{equation}
+
+を用いる。
+ここで $y_i$ は実測値、$f_i$ はフィット値、$\bar{y}$ は実測値の平均である。
+$R^2$ は目安であり、最終判断ではフィット図や残差も確認する必要がある。
+
+\section{適用範囲}
+
+現在のアプリが特に有効なのは、ラマンピークがガウス外挿可能で、トムソン散乱が非集団的に近い場合である。
+一方、$\alpha$ が1に近い場合、またはトムソン散乱スペクトルが明らかに非ガウス形である場合は、論文 Eq. (9) に基づく弱集団・集団的スペクトル密度関数フィットが必要となる。
+
+\end{document}
