@@ -7,10 +7,13 @@ from pathlib import Path
 
 
 K_B = 1.380649e-23
+EPSILON_0 = 8.8541878128e-12
 E_CHARGE = 1.602176634e-19
 M_E = 9.1093837139e-31
 C = 299_792_458.0
 R_E = 2.8179403262e-15
+PAPER_N2_STOKES_CROSS_SECTION_M2 = 3.82e-34
+PAPER_THOMSON_CROSS_SECTION_M2 = R_E**2
 
 
 def read_summary_value(path: str | Path, name: str) -> float:
@@ -32,6 +35,69 @@ def differential_thomson_cross_section(scattering_angle_deg: float, polarization
     return polarization_factor * unpolarized
 
 
+def throughput_from_raman(
+    raman_stokes_counts: float,
+    gas_density_m3: float,
+    raman_stokes_cross_section_m2: float,
+    raman_shots: float = 1.0,
+) -> float:
+    """Paper Eq. (8): N_Stokes = k * n_gas * sigma_Stokes."""
+    if raman_shots <= 0:
+        raise ValueError("raman_shots must be positive.")
+    if gas_density_m3 <= 0:
+        raise ValueError("gas_density_m3 must be positive.")
+    if raman_stokes_cross_section_m2 <= 0:
+        raise ValueError("raman_stokes_cross_section_m2 must be positive.")
+    counts_per_shot = raman_stokes_counts / raman_shots
+    if counts_per_shot <= 0:
+        raise ValueError("raman_stokes_counts per shot must be positive.")
+    return counts_per_shot / (gas_density_m3 * raman_stokes_cross_section_m2)
+
+
+def electron_density_from_thomson_counts(
+    thomson_counts: float,
+    throughput_k_m: float,
+    thomson_cross_section_m2: float,
+    thomson_shots: float = 1.0,
+    correction_factor: float = 1.0,
+) -> float:
+    """Paper Eq. (3): N_T = k * n_e * sigma_T."""
+    if thomson_shots <= 0:
+        raise ValueError("thomson_shots must be positive.")
+    if throughput_k_m <= 0:
+        raise ValueError("throughput_k_m must be positive.")
+    if thomson_cross_section_m2 <= 0:
+        raise ValueError("thomson_cross_section_m2 must be positive.")
+    counts_per_shot = thomson_counts / thomson_shots
+    return correction_factor * counts_per_shot / (throughput_k_m * thomson_cross_section_m2)
+
+
+def electron_density_from_paper_raman_calibration(
+    thomson_counts: float,
+    raman_stokes_counts: float,
+    gas_density_m3: float,
+    raman_stokes_cross_section_m2: float,
+    thomson_cross_section_m2: float,
+    thomson_shots: float = 1.0,
+    raman_shots: float = 1.0,
+    correction_factor: float = 1.0,
+) -> tuple[float, float]:
+    k_m = throughput_from_raman(
+        raman_stokes_counts=raman_stokes_counts,
+        gas_density_m3=gas_density_m3,
+        raman_stokes_cross_section_m2=raman_stokes_cross_section_m2,
+        raman_shots=raman_shots,
+    )
+    ne_m3 = electron_density_from_thomson_counts(
+        thomson_counts=thomson_counts,
+        throughput_k_m=k_m,
+        thomson_cross_section_m2=thomson_cross_section_m2,
+        thomson_shots=thomson_shots,
+        correction_factor=correction_factor,
+    )
+    return ne_m3, k_m
+
+
 def electron_density_from_raman(
     thomson_area: float,
     raman_area: float,
@@ -51,6 +117,31 @@ def electron_density_from_raman(
         * (raman_differential_cross_section_m2_sr / thomson_differential_cross_section_m2_sr)
         * correction_factor
     )
+
+
+def scattering_wave_number(laser_wavelength_nm: float, scattering_angle_deg: float) -> float:
+    laser_wavelength_m = laser_wavelength_nm * 1e-9
+    theta = math.radians(scattering_angle_deg)
+    return 4.0 * math.pi * math.sin(theta / 2.0) / laser_wavelength_m
+
+
+def debye_length_m(electron_temperature_ev: float, electron_density_m3: float) -> float:
+    if electron_temperature_ev <= 0:
+        raise ValueError("electron_temperature_ev must be positive.")
+    if electron_density_m3 <= 0:
+        raise ValueError("electron_density_m3 must be positive.")
+    return math.sqrt(EPSILON_0 * electron_temperature_ev * E_CHARGE / (electron_density_m3 * E_CHARGE**2))
+
+
+def scattering_parameter_alpha(
+    electron_density_m3: float,
+    electron_temperature_ev: float,
+    laser_wavelength_nm: float,
+    scattering_angle_deg: float,
+) -> float:
+    k_wave = scattering_wave_number(laser_wavelength_nm, scattering_angle_deg)
+    lambda_d = debye_length_m(electron_temperature_ev, electron_density_m3)
+    return 1.0 / (k_wave * lambda_d)
 
 
 def electron_temperature_from_width(
@@ -80,7 +171,10 @@ def main() -> None:
     parser.add_argument("--area-kind", choices=["gaussian", "direct"], default="gaussian")
     parser.add_argument("--pressure-pa", type=float, required=True, help="Hydrogen pressure for Raman calibration")
     parser.add_argument("--gas-temperature-k", type=float, default=300.0)
-    parser.add_argument("--raman-dsigma", type=float, required=True, help="Differential Raman cross section in m^2/sr")
+    parser.add_argument("--raman-dsigma", type=float, default=PAPER_N2_STOKES_CROSS_SECTION_M2, help="Effective Stokes Raman cross section in m^2")
+    parser.add_argument("--thomson-dsigma", type=float, default=PAPER_THOMSON_CROSS_SECTION_M2, help="Thomson differential cross section in m^2")
+    parser.add_argument("--raman-shots", type=float, default=1.0)
+    parser.add_argument("--thomson-shots", type=float, default=1.0)
     parser.add_argument("--scattering-angle-deg", type=float, required=True)
     parser.add_argument("--polarization-factor", type=float, default=1.0)
     parser.add_argument("--correction-factor", type=float, default=1.0, help="Transmission, laser energy, gate, and gain correction")
@@ -94,13 +188,14 @@ def main() -> None:
     raman_area = read_summary_value(args.raman_summary, area_name)
 
     gas_density = gas_density_from_pressure(args.pressure_pa, args.gas_temperature_k)
-    thomson_dsigma = differential_thomson_cross_section(args.scattering_angle_deg, args.polarization_factor)
-    ne_m3 = electron_density_from_raman(
-        thomson_area=thomson_area,
-        raman_area=raman_area,
+    ne_m3, k_m = electron_density_from_paper_raman_calibration(
+        thomson_counts=thomson_area,
+        raman_stokes_counts=raman_area,
         gas_density_m3=gas_density,
-        raman_differential_cross_section_m2_sr=args.raman_dsigma,
-        thomson_differential_cross_section_m2_sr=thomson_dsigma,
+        raman_stokes_cross_section_m2=args.raman_dsigma,
+        thomson_cross_section_m2=args.thomson_dsigma,
+        thomson_shots=args.thomson_shots,
+        raman_shots=args.raman_shots,
         correction_factor=args.correction_factor,
     )
 
@@ -108,8 +203,9 @@ def main() -> None:
     print(f"thomson_area: {thomson_area:.6e} count*pixel")
     print(f"raman_area: {raman_area:.6e} count*pixel")
     print(f"hydrogen_density: {gas_density:.6e} m^-3")
-    print(f"thomson_dsigma: {thomson_dsigma:.6e} m^2/sr")
-    print(f"raman_dsigma: {args.raman_dsigma:.6e} m^2/sr")
+    print(f"throughput_k: {k_m:.6e} m")
+    print(f"thomson_dsigma: {args.thomson_dsigma:.6e} m^2")
+    print(f"raman_stokes_sigma: {args.raman_dsigma:.6e} m^2")
     print(f"electron_density: {ne_m3:.6e} m^-3")
     print(f"electron_density: {ne_m3 / 1e6:.6e} cm^-3")
 
@@ -123,6 +219,8 @@ def main() -> None:
             instrument_sigma_pixel=args.instrument_sigma_pixel,
         )
         print(f"electron_temperature: {te_ev:.6e} eV")
+        alpha = scattering_parameter_alpha(ne_m3, te_ev, args.laser_wavelength_nm, args.scattering_angle_deg)
+        print(f"scattering_alpha: {alpha:.6e}")
 
 
 if __name__ == "__main__":

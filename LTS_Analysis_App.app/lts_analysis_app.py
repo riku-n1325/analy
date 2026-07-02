@@ -8,10 +8,12 @@ from tkinter import filedialog, messagebox, ttk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from calibrate_density import (  # noqa: E402
-    differential_thomson_cross_section,
-    electron_density_from_raman,
+    PAPER_N2_STOKES_CROSS_SECTION_M2,
+    PAPER_THOMSON_CROSS_SECTION_M2,
+    electron_density_from_paper_raman_calibration,
     electron_temperature_from_width,
     gas_density_from_pressure,
+    scattering_parameter_alpha,
 )
 from fit_peak import fit_gaussian_log_parabola  # noqa: E402
 from fit_thomson import fit_broad_gaussian  # noqa: E402
@@ -54,16 +56,20 @@ class LtsAnalysisApp(tk.Tk):
 
         self.pressure_pa = tk.StringVar(value="1000")
         self.gas_temperature_k = tk.StringVar(value="300")
-        self.raman_dsigma = tk.StringVar(value="1e-34")
-        self.polarization_factor = tk.StringVar(value="1")
+        self.raman_dsigma = tk.StringVar(value=f"{PAPER_N2_STOKES_CROSS_SECTION_M2:.3e}")
+        self.thomson_dsigma = tk.StringVar(value=f"{PAPER_THOMSON_CROSS_SECTION_M2:.3e}")
+        self.raman_shots = tk.StringVar(value="1")
+        self.thomson_shots = tk.StringVar(value="1")
         self.correction_factor = tk.StringVar(value="1")
         self.area_kind = tk.StringVar(value="gaussian")
 
         self._build_ui()
 
     def _build_ui(self) -> None:
-        root = ttk.Frame(self, padding=12)
-        root.pack(fill="both", expand=True)
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True)
+        root = ttk.Frame(notebook, padding=12)
+        notebook.add(root, text="ラマン校正TS解析")
         root.columnconfigure(0, weight=1)
         root.rowconfigure(3, weight=1)
 
@@ -79,23 +85,25 @@ class LtsAnalysisApp(tk.Tk):
         for i in range(6):
             param_box.columnconfigure(i, weight=1)
 
-        self._entry(param_box, 0, 0, "TS y最小", self.y_min)
-        self._entry(param_box, 0, 1, "TS y最大", self.y_max)
-        self._entry(param_box, 0, 2, "レーザー中心px", self.fixed_center)
-        self._entry(param_box, 0, 3, "ラマン中心px", self.raman_center)
-        self._entry(param_box, 0, 4, "ストップ最小px", self.raman_mask_min)
-        self._entry(param_box, 0, 5, "ストップ最大px", self.raman_mask_max)
+        self._entry(param_box, 0, 0, "TS y最小", self.y_min, "pixel")
+        self._entry(param_box, 0, 1, "TS y最大", self.y_max, "pixel")
+        self._entry(param_box, 0, 2, "レーザー中心", self.fixed_center, "pixel")
+        self._entry(param_box, 0, 3, "ラマン中心", self.raman_center, "pixel")
+        self._entry(param_box, 0, 4, "ストップ最小", self.raman_mask_min, "pixel")
+        self._entry(param_box, 0, 5, "ストップ最大", self.raman_mask_max, "pixel")
 
-        self._entry(param_box, 1, 0, "nm/pixel", self.nm_per_pixel)
-        self._entry(param_box, 1, 1, "レーザーnm", self.laser_wavelength_nm)
-        self._entry(param_box, 1, 2, "散乱角deg", self.scattering_angle_deg)
-        self._entry(param_box, 1, 3, "装置sigma px", self.instrument_sigma_pixel)
-        self._entry(param_box, 1, 4, "水素圧力Pa", self.pressure_pa)
-        self._entry(param_box, 1, 5, "気体温度K", self.gas_temperature_k)
+        self._entry(param_box, 1, 0, "波長校正", self.nm_per_pixel, "nm/pixel")
+        self._entry(param_box, 1, 1, "レーザー波長", self.laser_wavelength_nm, "nm")
+        self._entry(param_box, 1, 2, "散乱角", self.scattering_angle_deg, "deg")
+        self._entry(param_box, 1, 3, "装置幅sigma", self.instrument_sigma_pixel, "pixel")
+        self._entry(param_box, 1, 4, "水素圧力", self.pressure_pa, "Pa")
+        self._entry(param_box, 1, 5, "気体温度", self.gas_temperature_k, "K")
 
-        self._entry(param_box, 2, 0, "ラマンdσ m2/sr", self.raman_dsigma)
-        self._entry(param_box, 2, 1, "偏光係数", self.polarization_factor)
-        self._entry(param_box, 2, 2, "補正係数", self.correction_factor)
+        self._entry(param_box, 2, 0, "ラマン有効断面積", self.raman_dsigma, "m^2")
+        self._entry(param_box, 2, 1, "TS断面積", self.thomson_dsigma, "m^2")
+        self._entry(param_box, 2, 2, "ラマンshot数", self.raman_shots, "shots")
+        self._entry(param_box, 2, 3, "TS shot数", self.thomson_shots, "shots")
+        self._entry(param_box, 2, 4, "補正係数", self.correction_factor, "-")
 
         area_frame = ttk.Frame(param_box)
         area_frame.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
@@ -121,11 +129,14 @@ class LtsAnalysisApp(tk.Tk):
         ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", padx=8)
         ttk.Button(parent, text="選択", command=lambda: self._browse_dir(var)).grid(row=row, column=2, pady=3)
 
-    def _entry(self, parent: ttk.Frame, row: int, col: int, label: str, var: tk.StringVar) -> None:
+    def _entry(self, parent: ttk.Frame, row: int, col: int, label: str, var: tk.StringVar, unit: str) -> None:
         frame = ttk.Frame(parent)
         frame.grid(row=row, column=col, sticky="ew", padx=4, pady=3)
         ttk.Label(frame, text=label).pack(anchor="w")
-        ttk.Entry(frame, textvariable=var, width=13).pack(fill="x")
+        value_frame = ttk.Frame(frame)
+        value_frame.pack(fill="x")
+        ttk.Entry(value_frame, textvariable=var, width=12).pack(side="left", fill="x", expand=True)
+        ttk.Label(value_frame, text=unit, width=8).pack(side="left", padx=(4, 0))
 
     def _browse_file(self, var: tk.StringVar) -> None:
         path = filedialog.askopenfilename(filetypes=[("SPE files", "*.spe"), ("All files", "*.*")])
@@ -189,7 +200,9 @@ class LtsAnalysisApp(tk.Tk):
             pressure = self._float(self.pressure_pa, "Pressure Pa")
             gas_temp = self._float(self.gas_temperature_k, "Gas K")
             raman_dsigma = self._float(self.raman_dsigma, "Raman dσ")
-            polarization = self._float(self.polarization_factor, "Polarization")
+            thomson_dsigma = self._float(self.thomson_dsigma, "Thomson dσ")
+            raman_shots = self._float(self.raman_shots, "Raman shots")
+            thomson_shots = self._float(self.thomson_shots, "Thomson shots")
             correction = self._float(self.correction_factor, "Correction")
 
             ts = read_spe(thomson_file)
@@ -227,9 +240,18 @@ class LtsAnalysisApp(tk.Tk):
                     self._log("警告: ラマンピークがストップで欠けている場合、直接積分面積は推奨しません。ガウス面積を使ってください。")
 
             gas_density = gas_density_from_pressure(pressure, gas_temp)
-            ts_dsigma = differential_thomson_cross_section(angle, polarization)
-            ne = electron_density_from_raman(ts_area, raman_area, gas_density, raman_dsigma, ts_dsigma, correction)
+            ne, throughput_k = electron_density_from_paper_raman_calibration(
+                thomson_counts=ts_area,
+                raman_stokes_counts=raman_area,
+                gas_density_m3=gas_density,
+                raman_stokes_cross_section_m2=raman_dsigma,
+                thomson_cross_section_m2=thomson_dsigma,
+                thomson_shots=thomson_shots,
+                raman_shots=raman_shots,
+                correction_factor=correction,
+            )
             te = electron_temperature_from_width(ts_fit.sigma_pixel, nm_per_pixel, laser_nm, angle, inst_sigma)
+            alpha = scattering_parameter_alpha(ne, te, laser_nm, angle)
 
             result_path = out_dir / "latest_lts_result.csv"
             write_summary(
@@ -244,9 +266,16 @@ class LtsAnalysisApp(tk.Tk):
                     "raman_sigma": (raman_fit.sigma_pixel, "pixel"),
                     "raman_area": (raman_area, "count_pixel"),
                     "raman_r_squared": (raman_fit.r_squared, ""),
+                    "gas_density": (gas_density, "m^-3"),
+                    "throughput_k": (throughput_k, "m"),
+                    "raman_effective_cross_section": (raman_dsigma, "m^2"),
+                    "thomson_cross_section": (thomson_dsigma, "m^2"),
+                    "raman_shots": (raman_shots, "shots"),
+                    "thomson_shots": (thomson_shots, "shots"),
                     "electron_density_m3": (ne, "m^-3"),
                     "electron_density_cm3": (ne / 1e6, "cm^-3"),
                     "electron_temperature": (te, "eV"),
+                    "scattering_alpha": (alpha, ""),
                 },
             )
 
@@ -261,8 +290,11 @@ class LtsAnalysisApp(tk.Tk):
                         f"ラマンFWHM: {raman_fit.fwhm_pixel:.3f} pixel",
                         f"ラマンR^2: {raman_fit.r_squared:.4f}",
                         f"面積種別: {self.area_kind.get()}",
+                        f"n_gas: {gas_density:.6e} m^-3",
+                        f"k: {throughput_k:.6e} m",
                         f"ne: {ne:.6e} m^-3  ({ne / 1e6:.6e} cm^-3)",
                         f"Te: {te:.6e} eV",
+                        f"alpha: {alpha:.4f}",
                         f"保存先: {result_path}",
                         "",
                     ]

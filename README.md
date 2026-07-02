@@ -1,184 +1,122 @@
-# LTSラマン校正トムソン散乱解析スターター
+# LTSラマン校正トムソン散乱解析アプリ
 
-このフォルダは、ラマン散乱で絶対値校正したトムソン散乱解析を行うための試作コードです。
+このアプリは、ラマン散乱を用いた絶対値校正により、トムソン散乱スペクトルから電子密度と電子温度を求めるための試作版です。
 
-現在できることは次の通りです。
+参照式は、`Raster Thomson scattering in large-scale laser plasmas produced at high repetition rate` の Sec. III と Sec. IV に基づいています。
 
-- LightField/LightSpeed系の`.spe`ファイルを読み込む
-- CCD画像を縦方向に積算して1次元スペクトルにする
-- レイリー/ラマンの鋭いピークをガウスフィットする
-- 波長ストップで欠けたラマンピークを、欠損範囲を除外して外挿フィットする
-- トムソン散乱の広いスペクトル包絡線をフィットする
-- ラマン散乱強度を基準に電子密度を計算する
-- トムソン散乱幅から電子温度を計算する
-- 簡易GUIでファイル選択、条件入力、解析実行を行う
+## 起動
 
-## 1. 簡易アプリの起動
-
-通常は、次のファイルをダブルクリックして起動します。
+`LTS_Analysis_App.app` フォルダ内の次のファイルをダブルクリックします。
 
 ```text
 起動.bat
 ```
 
-コマンドから起動する場合は、次のように実行します。
+## ラマン校正TS解析タブ
 
-```powershell
-& "C:\Users\rb_iy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" `
-  "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\lts_analysis_app.py"
-```
+タブ名は `ラマン校正TS解析` です。
 
-GUIでは次を入力します。
+入力欄では、数値入力枠の右側に単位を表示しています。論文中で実験値や引用値として与えられていた値も、固定値にはせず、ユーザーが変更できる入力欄にしています。
 
-- `Thomson SPE`: トムソン散乱スペクトルの`.spe`ファイル
-- `Raman SPE`: ラマン散乱スペクトルの`.spe`ファイル
-- `Output`: 解析結果CSVなどの保存先
-- `Pressure Pa`: 測定時のチャンバー内水素圧力
-- `nm/pixel`: 波長校正値。現在の初期値は`0.021`
-- `Laser nm`: レーザー波長
-- `Angle deg`: 散乱角
-- `Raman dσ m2/sr`: ラマン微分散乱断面積
-- `Stop min px`, `Stop max px`: 波長ストップで隠れたピクセル範囲
+主な入力値は次の通りです。
 
-解析ボタンを押すと、電子密度、電子温度、トムソン/ラマンそれぞれのフィット指標`R^2`が表示されます。
+- トムソンSPE: トムソン散乱スペクトルの`.spe`
+- ラマンSPE: ラマン散乱スペクトルの`.spe`
+- 水素圧力: チャンバー内ガス圧力 `Pa`
+- 気体温度: ガス温度 `K`
+- 波長校正: `nm/pixel`
+- レーザー波長: `nm`
+- 散乱角: `deg`
+- ラマン有効断面積: 論文 Eq. (8) の Stokes 総和断面積 `m^2`
+- TS断面積: 論文 Eq. (3) のトムソン散乱断面積 `m^2`
+- ラマンshot数: ラマン信号の積算ショット数
+- TS shot数: トムソン信号の積算ショット数
+- 補正係数: 透過率、ゲイン、レーザーエネルギー差などをまとめた補正係数
 
-## 2. SPEファイルをスペクトル化する
+論文値に対応する初期値:
 
-`.spe`を読み込み、2次元CCD画像と1次元スペクトルを出力します。
+- ラマン有効断面積: `3.82e-34 m^2`
+- TS断面積: `r_e^2 = 7.94e-30 m^2`
+- 波長校正: ユーザー指定値 `0.021 nm/pixel`
 
-```powershell
-& "C:\Users\rb_iy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" `
-  "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\read_spe.py" `
-  "C:\path\to\data.spe" `
-  --out-dir "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter"
-```
+## 使用している式
 
-出力されるファイルは次の通りです。
-
-- `*_preview.png`: 2次元CCD画像のプレビュー
-- `*_spectrum.csv`: 縦方向に積算した1次元スペクトル
-- `*_spectrum.png`: 1次元スペクトルの簡易プロット
-
-信号がCCDの一部の行だけにある場合は、積算範囲を指定します。
-
-```powershell
---y-min 400 --y-max 650
-```
-
-## 3. ラマン/レイリーピークをフィットする
-
-鋭いピークをガウス近似します。
-
-```powershell
-& "C:\Users\rb_iy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" `
-  "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\fit_peak.py" `
-  "C:\path\to\data.spe" `
-  --out-dir "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter"
-```
-
-主なオプションです。
-
-- `--peak-pixel 537`: ピークのおおよその位置を指定する
-- `--window 25`: フィット範囲の半幅を指定する
-- `--sideband 80`: ベースライン推定に使う左右の範囲を指定する
-- `--mask-min 646 --mask-max 654`: 波長ストップで隠れた範囲をフィットから除外する
-- `--fixed-center 650`: 欠けたラマンピークの中心を固定する
-
-出力されるファイルは次の通りです。
-
-- `*_fit.png`: 実データとガウスフィットの重ね描き
-- `*_fit_curve.csv`: スペクトルとフィット曲線
-- `*_fit_summary.csv`: 中心、幅、面積、R^2などのまとめ
-
-波長ストップでラマンピークが欠けている場合は、**直接積分面積ではなくガウス面積を使ってください**。直接積分面積は見えている部分だけの面積なので、本来のラマン信号を過小評価します。
-
-## 4. 仮想ラマンSPEを作る
-
-実ラマンデータがまだない場合、テスト用の仮想ラマン`.spe`を作れます。
-
-```powershell
-& "C:\Users\rb_iy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" `
-  "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\simulate_raman_spe.py" `
-  --out "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\virtual_raman.spe"
-```
-
-波長ストップで中央が欠けたラマンピークを試す場合は、次のようにします。
-
-```powershell
-& "C:\Users\rb_iy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" `
-  "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\simulate_raman_spe.py" `
-  --out "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\virtual_raman_blocked.spe" `
-  --stop-min-pixel 646 --stop-max-pixel 654
-```
-
-欠けたピークをフィットする例です。
-
-```powershell
-& "C:\Users\rb_iy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" `
-  "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\fit_peak.py" `
-  "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\virtual_raman_blocked.spe" `
-  --out-dir "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter" `
-  --fixed-center 650 --peak-pixel 650 --mask-min 646 --mask-max 654 --window 45 --sideband 100
-```
-
-## 5. トムソン散乱スペクトルをフィットする
-
-スパイクを含む広いトムソン散乱スペクトルには、専用フィッタを使います。
-
-```powershell
-& "C:\Users\rb_iy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" `
-  "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\fit_thomson.py" `
-  "C:\path\to\thomson.spe" `
-  --out-dir "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter" `
-  --y-min 600 --y-max 970 `
-  --fixed-center 536.8749
-```
-
-`--fixed-center`には、同じ分光器設定で測ったレイリー線またはレーザー線の中心ピクセルを入れるのが基本です。
-
-出力されるファイルは次の通りです。
-
-- `*_thomson_fit.png`: 生データ、平滑化データ、ベースライン、ガウス包絡線
-- `*_thomson_fit_curve.csv`: 生データ、平滑化データ、ベースライン、フィット曲線
-- `*_thomson_fit_summary.csv`: 中心、幅、面積、R^2などのまとめ
-
-## 6. ラマン校正による電子密度
-
-トムソン散乱とラマン散乱をそれぞれフィットした後、電子密度を計算します。
-
-```powershell
-& "C:\Users\rb_iy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" `
-  "C:\Users\rb_iy\Documents\Codex\2026-06-30\github\outputs\spe_starter\calibrate_density.py" `
-  --thomson-summary "C:\path\to\thomson_fit_summary.csv" `
-  --raman-summary "C:\path\to\raman_fit_summary.csv" `
-  --pressure-pa 1000 `
-  --gas-temperature-k 300 `
-  --raman-dsigma 1.0e-34 `
-  --scattering-angle-deg 90
-```
-
-`--raman-dsigma`には、レーザー波長、ラマン遷移、偏光、集光配置に対応した正しいラマン微分散乱断面積を入れてください。現在の`1.0e-34`は動作確認用の仮値です。
-
-使っている校正式は次です。
+論文 Eq. (8):
 
 ```text
-ne = n_H2 * (A_TS / A_Raman) * ((dσ/dΩ)_Raman / (dσ/dΩ)_Thomson) * correction_factor
+N_Stokes = k * n_gas * sigma_Stokes
 ```
 
-ここで、`correction_factor`にはレーザーエネルギー、ゲート幅、検出器ゲイン、分光器透過率、フィルタ透過率などの補正を含められます。
+ここから装置定数 `k` を求めます。
 
-電子温度も同時に出す場合は、波長校正値とレーザー波長を指定します。
-
-```powershell
---nm-per-pixel 0.021 --laser-wavelength-nm 532
+```text
+k = N_Stokes / (n_gas * sigma_Stokes)
 ```
 
-## 7. フィット評価値について
+論文 Eq. (3):
 
-現在はフィットの評価値として`R^2`を出しています。
+```text
+N_T = k * n_e * sigma_T
+```
 
-- `R^2`が1に近いほど、選んだモデルがデータをよく説明しています。
-- ラマンピークのような単峰ガウスでは高い`R^2`が期待できます。
-- トムソン散乱ではスパイク、迷光、中心付近の欠損、非ガウス成分があるため、`R^2`は低めになることがあります。
+したがって電子密度は次で求めます。
 
-`R^2`は目安であり、最終判断では必ずフィット図も確認してください。
+```text
+n_e = N_T / (k * sigma_T)
+```
+
+アプリ内では、ショット数で割った1ショットあたりの信号を使います。
+
+```text
+N_Stokes = Raman area / Raman shots
+N_T      = Thomson area / Thomson shots
+```
+
+圧力から中性ガス密度を求めます。
+
+```text
+n_gas = P / (k_B * T_gas)
+```
+
+トムソン散乱幅から電子温度を求める式は、非集団的なガウス近似に基づくドップラー幅の式です。
+
+```text
+T_e[eV] = (m_e c^2 / e) * (sigma_lambda / (2 lambda_i sin(theta/2)))^2
+```
+
+また、論文 Sec. IV に従って散乱パラメータも出力します。
+
+```text
+alpha = 1 / (k_s * lambda_D)
+k_s = 4 pi sin(theta/2) / lambda_i
+```
+
+`alpha` が大きい場合、スペクトルは単純なガウスではなく弱集団・集団的な形になり得ます。その場合は、論文 Eq. (9) のスペクトル密度関数によるフィットが必要になります。現在のアプリはまず非集団的ガウス近似とラマン絶対値校正を実装しています。
+
+## 波長ストップで欠けたラマンピーク
+
+ラマンピーク中心が波長ストップで欠けている場合は、`ストップ最小px` と `ストップ最大px` に遮光範囲を入力します。
+
+その範囲をフィットから除外し、残った裾からガウス全体を外挿します。この場合、面積種別は `ガウス面積` を使ってください。`直接積分` は見えている部分だけの面積になるため、校正値を過小評価します。
+
+## 出力
+
+解析ボタンを押すと、ログ欄に次を表示します。
+
+- トムソン中心
+- トムソンFWHM
+- トムソンR^2
+- ラマン中心
+- ラマンFWHM
+- ラマンR^2
+- 中性ガス密度 `n_gas`
+- 装置定数 `k`
+- 電子密度 `n_e`
+- 電子温度 `T_e`
+- 散乱パラメータ `alpha`
+
+同じ内容を `latest_lts_result.csv` に保存します。
+
+## 注意
+
+現在の電子温度計算は非集団的ガウス近似です。論文 Eq. (9) の弱集団・集団的スペクトル密度関数フィットは、今後追加する拡張候補です。
