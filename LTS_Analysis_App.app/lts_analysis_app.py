@@ -10,12 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from calibrate_density import (  # noqa: E402
     PAPER_N2_STOKES_CROSS_SECTION_M2,
     PAPER_THOMSON_CROSS_SECTION_M2,
-    electron_density_from_paper_raman_calibration,
+    electron_density_from_thomson_counts,
     electron_temperature_from_width,
     gas_density_from_pressure,
     scattering_parameter_alpha,
+    throughput_from_raman,
 )
-from fit_peak import fit_gaussian_log_parabola  # noqa: E402
+from fit_peak import fit_gaussian_log_parabola, fit_multiple_gaussian_peaks  # noqa: E402
 from fit_thomson import fit_broad_gaussian  # noqa: E402
 from read_spe import read_spe, spectrum_from_image  # noqa: E402
 
@@ -41,6 +42,8 @@ class LtsAnalysisApp(tk.Tk):
         self.thomson_path = tk.StringVar()
         default_raman = APP_DIR / "virtual_raman.spe"
         self.raman_path = tk.StringVar(value=str(default_raman) if default_raman.exists() else "")
+        self.raman_start_path = tk.StringVar(value=str(default_raman) if default_raman.exists() else "")
+        self.raman_end_path = tk.StringVar(value=str(default_raman) if default_raman.exists() else "")
         self.out_dir = tk.StringVar(value=str(APP_DIR))
 
         self.y_min = tk.StringVar(value="600")
@@ -49,6 +52,10 @@ class LtsAnalysisApp(tk.Tk):
         self.raman_center = tk.StringVar(value="650")
         self.raman_mask_min = tk.StringVar(value="")
         self.raman_mask_max = tk.StringVar(value="")
+        self.raman_stokes_min = tk.StringVar(value="")
+        self.raman_stokes_max = tk.StringVar(value="")
+        self.raman_max_peaks = tk.StringVar(value="12")
+        self.raman_peak_threshold = tk.StringVar(value="0.08")
         self.nm_per_pixel = tk.StringVar(value="0.021")
         self.laser_wavelength_nm = tk.StringVar(value="532")
         self.scattering_angle_deg = tk.StringVar(value="90")
@@ -60,6 +67,18 @@ class LtsAnalysisApp(tk.Tk):
         self.thomson_dsigma = tk.StringVar(value=f"{PAPER_THOMSON_CROSS_SECTION_M2:.3e}")
         self.raman_shots = tk.StringVar(value="1")
         self.thomson_shots = tk.StringVar(value="1")
+        self.raman_energy_mj = tk.StringVar(value="1")
+        self.thomson_energy_mj = tk.StringVar(value="1")
+        self.calibration_mode = tk.StringVar(value="single")
+        self.thomson_time_h = tk.StringVar(value="")
+        self.raman_start_time_h = tk.StringVar(value="0")
+        self.raman_end_time_h = tk.StringVar(value="")
+        self.raman_start_pressure_pa = tk.StringVar(value="1000")
+        self.raman_end_pressure_pa = tk.StringVar(value="1000")
+        self.raman_start_shots = tk.StringVar(value="1")
+        self.raman_end_shots = tk.StringVar(value="1")
+        self.raman_start_energy_mj = tk.StringVar(value="1")
+        self.raman_end_energy_mj = tk.StringVar(value="1")
         self.correction_factor = tk.StringVar(value="1")
         self.area_kind = tk.StringVar(value="gaussian")
 
@@ -89,7 +108,9 @@ class LtsAnalysisApp(tk.Tk):
         file_box.columnconfigure(1, weight=1)
         self._file_row(file_box, 0, "トムソンSPE", self.thomson_path)
         self._file_row(file_box, 1, "ラマンSPE", self.raman_path)
-        self._dir_row(file_box, 2, "保存先", self.out_dir)
+        self._file_row(file_box, 2, "開始ラマンSPE", self.raman_start_path)
+        self._file_row(file_box, 3, "終了ラマンSPE", self.raman_end_path)
+        self._dir_row(file_box, 4, "保存先", self.out_dir)
 
         param_box = ttk.LabelFrame(root, text="解析条件", padding=10)
         param_box.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -114,13 +135,32 @@ class LtsAnalysisApp(tk.Tk):
         self._entry(param_box, 2, 1, "TS断面積", self.thomson_dsigma, "m^2")
         self._entry(param_box, 2, 2, "ラマンshot数", self.raman_shots, "shots")
         self._entry(param_box, 2, 3, "TS shot数", self.thomson_shots, "shots")
-        self._entry(param_box, 2, 4, "補正係数", self.correction_factor, "-")
+        self._entry(param_box, 2, 4, "ラマンEnergy", self.raman_energy_mj, "mJ")
+        self._entry(param_box, 2, 5, "TS Energy", self.thomson_energy_mj, "mJ")
+        self._entry(param_box, 3, 0, "Stokes探索最小", self.raman_stokes_min, "pixel")
+        self._entry(param_box, 3, 1, "Stokes探索最大", self.raman_stokes_max, "pixel")
+        self._entry(param_box, 3, 2, "最大ピーク数", self.raman_max_peaks, "個")
+        self._entry(param_box, 3, 3, "ピークしきい値", self.raman_peak_threshold, "-")
+        self._entry(param_box, 3, 4, "TS時刻", self.thomson_time_h, "h")
+        self._entry(param_box, 3, 5, "補正係数", self.correction_factor, "-")
+        self._entry(param_box, 4, 0, "開始時刻", self.raman_start_time_h, "h")
+        self._entry(param_box, 4, 1, "開始圧力", self.raman_start_pressure_pa, "Pa")
+        self._entry(param_box, 4, 2, "開始shot数", self.raman_start_shots, "shots")
+        self._entry(param_box, 4, 3, "開始Energy", self.raman_start_energy_mj, "mJ")
+        self._entry(param_box, 5, 0, "終了時刻", self.raman_end_time_h, "h")
+        self._entry(param_box, 5, 1, "終了圧力", self.raman_end_pressure_pa, "Pa")
+        self._entry(param_box, 5, 2, "終了shot数", self.raman_end_shots, "shots")
+        self._entry(param_box, 5, 3, "終了Energy", self.raman_end_energy_mj, "mJ")
 
         area_frame = ttk.Frame(param_box)
-        area_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        area_frame.grid(row=6, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        ttk.Label(area_frame, text="校正").pack(side="left")
+        ttk.Radiobutton(area_frame, text="単一ラマン", value="single", variable=self.calibration_mode).pack(side="left", padx=8)
+        ttk.Radiobutton(area_frame, text="時間補間", value="drift", variable=self.calibration_mode).pack(side="left")
         ttk.Label(area_frame, text="面積").pack(side="left")
         ttk.Radiobutton(area_frame, text="ガウス面積", value="gaussian", variable=self.area_kind).pack(side="left", padx=8)
         ttk.Radiobutton(area_frame, text="直接積分", value="direct", variable=self.area_kind).pack(side="left")
+        ttk.Radiobutton(area_frame, text="複数Stokes合計", value="multi_stokes", variable=self.area_kind).pack(side="left", padx=8)
 
         actions = ttk.Frame(root)
         actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -252,6 +292,69 @@ class LtsAnalysisApp(tk.Tk):
             return None
         return int(round(value))
 
+    def _fit_raman_signal(
+        self,
+        raman_file: Path,
+        raman_center: float | None,
+        raman_mask_min: int | None,
+        raman_mask_max: int | None,
+        raman_stokes_min: int | None,
+        raman_stokes_max: int | None,
+        raman_max_peaks: int,
+        raman_peak_threshold: float,
+    ) -> dict[str, object]:
+        raman = read_spe(raman_file)
+        raman_spectrum = spectrum_from_image(raman.image, None, None)
+        raman_multi_fit = None
+        if self.area_kind.get() == "multi_stokes":
+            raman_multi_fit = fit_multiple_gaussian_peaks(
+                raman_spectrum,
+                min_pixel=raman_stokes_min,
+                max_pixel=raman_stokes_max,
+                max_peaks=raman_max_peaks,
+                window=14,
+                sideband=55,
+                min_prominence_fraction=raman_peak_threshold,
+            )
+            raman_fit = raman_multi_fit.peaks[0]
+            area = raman_multi_fit.total_gaussian_area
+            r_squared = raman_multi_fit.mean_r_squared
+            peak_count = len(raman_multi_fit.peaks)
+            peak_pixels = ", ".join(f"{peak.center_pixel:.2f}" for peak in raman_multi_fit.peaks)
+        else:
+            raman_fit = fit_gaussian_log_parabola(
+                raman_spectrum,
+                peak_pixel=None if raman_center is None else int(round(raman_center)),
+                window=45,
+                sideband=100,
+                mask_min=raman_mask_min,
+                mask_max=raman_mask_max,
+                fixed_center=raman_center,
+            )
+            if self.area_kind.get() == "gaussian":
+                area = raman_fit.gaussian_area
+            else:
+                area = raman_fit.direct_area
+                if raman_mask_min is not None and raman_mask_max is not None:
+                    self._log("警告: ラマンピークがストップで欠けている場合、直接積分面積は推奨しません。")
+            r_squared = raman_fit.r_squared
+            peak_count = 1
+            peak_pixels = f"{raman_fit.center_pixel:.2f}"
+
+        return {
+            "fit": raman_fit,
+            "area": float(area),
+            "r_squared": float(r_squared),
+            "peak_count": int(peak_count),
+            "peak_pixels": str(peak_pixels),
+        }
+
+    @staticmethod
+    def _positive(value: float, name: str) -> float:
+        if value <= 0:
+            raise ValueError(f"{name} は正の値を入力してください: {value}")
+        return value
+
     def analyze(self) -> None:
         try:
             out_dir = Path(self.out_dir.get())
@@ -259,10 +362,17 @@ class LtsAnalysisApp(tk.Tk):
 
             thomson_file = Path(self.thomson_path.get())
             raman_file = Path(self.raman_path.get())
+            raman_start_file = Path(self.raman_start_path.get())
+            raman_end_file = Path(self.raman_end_path.get())
             if not thomson_file.exists():
                 raise FileNotFoundError(f"トムソンSPEが見つかりません: {thomson_file}")
-            if not raman_file.exists():
+            if self.calibration_mode.get() == "single" and not raman_file.exists():
                 raise FileNotFoundError(f"ラマンSPEが見つかりません: {raman_file}")
+            if self.calibration_mode.get() == "drift":
+                if not raman_start_file.exists():
+                    raise FileNotFoundError(f"開始ラマンSPEが見つかりません: {raman_start_file}")
+                if not raman_end_file.exists():
+                    raise FileNotFoundError(f"終了ラマンSPEが見つかりません: {raman_end_file}")
 
             y_min = self._int(self.y_min, "TS y最小")
             y_max = self._int(self.y_max, "TS y最大")
@@ -270,6 +380,10 @@ class LtsAnalysisApp(tk.Tk):
             raman_center = self._optional_float(self.raman_center, "ラマン中心")
             raman_mask_min = self._optional_int(self.raman_mask_min, "ストップ最小")
             raman_mask_max = self._optional_int(self.raman_mask_max, "ストップ最大")
+            raman_stokes_min = self._optional_int(self.raman_stokes_min, "Stokes探索最小")
+            raman_stokes_max = self._optional_int(self.raman_stokes_max, "Stokes探索最大")
+            raman_max_peaks = self._int(self.raman_max_peaks, "最大ピーク数")
+            raman_peak_threshold = self._float(self.raman_peak_threshold, "ピークしきい値")
             nm_per_pixel = self._float(self.nm_per_pixel, "波長校正")
             laser_nm = self._float(self.laser_wavelength_nm, "レーザー波長")
             angle = self._float(self.scattering_angle_deg, "散乱角")
@@ -280,6 +394,8 @@ class LtsAnalysisApp(tk.Tk):
             thomson_dsigma = self._float(self.thomson_dsigma, "TS断面積")
             raman_shots = self._float(self.raman_shots, "ラマンshot数")
             thomson_shots = self._float(self.thomson_shots, "TS shot数")
+            raman_energy_mj = self._float(self.raman_energy_mj, "ラマンEnergy")
+            thomson_energy_mj = self._float(self.thomson_energy_mj, "TS Energy")
             correction = self._float(self.correction_factor, "補正係数")
 
             ts = read_spe(thomson_file)
@@ -295,36 +411,108 @@ class LtsAnalysisApp(tk.Tk):
                 fixed_center=center,
             )
 
-            raman = read_spe(raman_file)
-            raman_spectrum = spectrum_from_image(raman.image, None, None)
-            raman_fit = fit_gaussian_log_parabola(
-                raman_spectrum,
-                peak_pixel=None if raman_center is None else int(round(raman_center)),
-                window=45,
-                sideband=100,
-                mask_min=raman_mask_min,
-                mask_max=raman_mask_max,
-                fixed_center=raman_center,
-            )
-
             if self.area_kind.get() == "gaussian":
                 ts_area = ts_fit.gaussian_area
-                raman_area = raman_fit.gaussian_area
+            elif self.area_kind.get() == "multi_stokes":
+                ts_area = ts_fit.gaussian_area
             else:
                 ts_area = ts_fit.direct_area
-                raman_area = raman_fit.direct_area
-                if raman_mask_min is not None and raman_mask_max is not None:
-                    self._log("警告: ラマンピークがストップで欠けている場合、直接積分面積は推奨しません。")
 
+            self._positive(thomson_shots, "TS shot数")
+            self._positive(thomson_energy_mj, "TS Energy")
             gas_density = gas_density_from_pressure(pressure, gas_temp)
-            ne, throughput_k = electron_density_from_paper_raman_calibration(
-                thomson_counts=ts_area,
-                raman_stokes_counts=raman_area,
-                gas_density_m3=gas_density,
-                raman_stokes_cross_section_m2=raman_dsigma,
+            drift_note = "single"
+            k_start = float("nan")
+            k_end = float("nan")
+            drift_rate = float("nan")
+
+            if self.calibration_mode.get() == "drift":
+                t_start = self._float(self.raman_start_time_h, "開始時刻")
+                t_end = self._float(self.raman_end_time_h, "終了時刻")
+                t_ts = self._float(self.thomson_time_h, "TS時刻")
+                if t_end == t_start:
+                    raise ValueError("開始時刻と終了時刻は異なる値にしてください。")
+
+                start_pressure = self._float(self.raman_start_pressure_pa, "開始圧力")
+                end_pressure = self._float(self.raman_end_pressure_pa, "終了圧力")
+                start_shots = self._positive(self._float(self.raman_start_shots, "開始shot数"), "開始shot数")
+                end_shots = self._positive(self._float(self.raman_end_shots, "終了shot数"), "終了shot数")
+                start_energy = self._positive(self._float(self.raman_start_energy_mj, "開始Energy"), "開始Energy")
+                end_energy = self._positive(self._float(self.raman_end_energy_mj, "終了Energy"), "終了Energy")
+
+                raman_start_info = self._fit_raman_signal(
+                    raman_start_file,
+                    raman_center,
+                    raman_mask_min,
+                    raman_mask_max,
+                    raman_stokes_min,
+                    raman_stokes_max,
+                    raman_max_peaks,
+                    raman_peak_threshold,
+                )
+                raman_end_info = self._fit_raman_signal(
+                    raman_end_file,
+                    raman_center,
+                    raman_mask_min,
+                    raman_mask_max,
+                    raman_stokes_min,
+                    raman_stokes_max,
+                    raman_max_peaks,
+                    raman_peak_threshold,
+                )
+                start_gas_density = gas_density_from_pressure(start_pressure, gas_temp)
+                end_gas_density = gas_density_from_pressure(end_pressure, gas_temp)
+                k_start = throughput_from_raman(
+                    raman_stokes_counts=float(raman_start_info["area"]) / start_energy,
+                    gas_density_m3=start_gas_density,
+                    raman_stokes_cross_section_m2=raman_dsigma,
+                    raman_shots=start_shots,
+                )
+                k_end = throughput_from_raman(
+                    raman_stokes_counts=float(raman_end_info["area"]) / end_energy,
+                    gas_density_m3=end_gas_density,
+                    raman_stokes_cross_section_m2=raman_dsigma,
+                    raman_shots=end_shots,
+                )
+                fraction = (t_ts - t_start) / (t_end - t_start)
+                throughput_k = k_start + (k_end - k_start) * fraction
+                drift_rate = (k_end - k_start) / (t_end - t_start)
+                raman_fit = raman_start_info["fit"]
+                raman_area = float(raman_start_info["area"])
+                raman_r_squared = float(raman_start_info["r_squared"])
+                raman_peak_count = int(raman_start_info["peak_count"])
+                raman_peak_pixels = str(raman_start_info["peak_pixels"])
+                drift_note = f"drift_interpolation: t={t_ts:g} h, fraction={fraction:.4f}"
+            else:
+                self._positive(raman_shots, "ラマンshot数")
+                self._positive(raman_energy_mj, "ラマンEnergy")
+                raman_info = self._fit_raman_signal(
+                    raman_file,
+                    raman_center,
+                    raman_mask_min,
+                    raman_mask_max,
+                    raman_stokes_min,
+                    raman_stokes_max,
+                    raman_max_peaks,
+                    raman_peak_threshold,
+                )
+                raman_fit = raman_info["fit"]
+                raman_area = float(raman_info["area"])
+                raman_r_squared = float(raman_info["r_squared"])
+                raman_peak_count = int(raman_info["peak_count"])
+                raman_peak_pixels = str(raman_info["peak_pixels"])
+                throughput_k = throughput_from_raman(
+                    raman_stokes_counts=raman_area / raman_energy_mj,
+                    gas_density_m3=gas_density,
+                    raman_stokes_cross_section_m2=raman_dsigma,
+                    raman_shots=raman_shots,
+                )
+
+            ne = electron_density_from_thomson_counts(
+                thomson_counts=ts_area / thomson_energy_mj,
+                throughput_k_m=throughput_k,
                 thomson_cross_section_m2=thomson_dsigma,
                 thomson_shots=thomson_shots,
-                raman_shots=raman_shots,
                 correction_factor=correction,
             )
             te = electron_temperature_from_width(ts_fit.sigma_pixel, nm_per_pixel, laser_nm, angle, inst_sigma)
@@ -342,9 +530,15 @@ class LtsAnalysisApp(tk.Tk):
                     "raman_center": (raman_fit.center_pixel, "pixel"),
                     "raman_sigma": (raman_fit.sigma_pixel, "pixel"),
                     "raman_area": (raman_area, "count_pixel"),
-                    "raman_r_squared": (raman_fit.r_squared, ""),
+                    "raman_r_squared": (raman_r_squared, ""),
+                    "raman_peak_count": (raman_peak_count, "peaks"),
                     "gas_density": (gas_density, "m^-3"),
-                    "throughput_k": (throughput_k, "m"),
+                    "calibration_mode": (drift_note, ""),
+                    "throughput_k": (throughput_k, "m/mJ"),
+                    "throughput_k_start": (k_start, "m/mJ"),
+                    "throughput_k_end": (k_end, "m/mJ"),
+                    "throughput_k_drift_rate": (drift_rate, "m/mJ/h"),
+                    "thomson_energy": (thomson_energy_mj, "mJ"),
                     "electron_density_m3": (ne, "m^-3"),
                     "electron_density_cm3": (ne / 1e6, "cm^-3"),
                     "electron_temperature": (te, "eV"),
@@ -361,9 +555,14 @@ class LtsAnalysisApp(tk.Tk):
                         f"トムソンR^2: {ts_fit.r_squared:.4f}",
                         f"ラマン中心: {raman_fit.center_pixel:.3f} pixel",
                         f"ラマンFWHM: {raman_fit.fwhm_pixel:.3f} pixel",
-                        f"ラマンR^2: {raman_fit.r_squared:.4f}",
+                        f"ラマンR^2: {raman_r_squared:.4f}",
+                        f"ラマンピーク数: {raman_peak_count}",
+                        f"ラマンピーク位置: {raman_peak_pixels} pixel",
                         f"n_gas: {gas_density:.6e} m^-3",
-                        f"k: {throughput_k:.6e} m",
+                        f"校正モード: {drift_note}",
+                        f"k: {throughput_k:.6e} m/mJ",
+                        f"k_start: {k_start:.6e} m/mJ",
+                        f"k_end: {k_end:.6e} m/mJ",
                         f"ne: {ne:.6e} m^-3  ({ne / 1e6:.6e} cm^-3)",
                         f"Te: {te:.6e} eV",
                         f"alpha: {alpha:.4f}",

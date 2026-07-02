@@ -32,6 +32,16 @@ class PeakFit:
     fixed_center_used: bool = False
 
 
+@dataclass
+class MultiPeakFit:
+    peaks: list[PeakFit]
+    total_gaussian_area: float
+    total_direct_area: float
+    mean_r_squared: float
+    fit_min_pixel: int
+    fit_max_pixel: int
+
+
 def estimate_baseline(spectrum: np.ndarray, peak_pixel: int, window: int, sideband: int) -> float:
     left0 = max(0, peak_pixel - window - sideband)
     left1 = max(0, peak_pixel - window)
@@ -138,6 +148,86 @@ def fit_gaussian_log_parabola(
         mask_min_pixel=mask_min,
         mask_max_pixel=mask_max,
         fixed_center_used=fixed_center is not None,
+    )
+
+
+def find_local_peaks(
+    spectrum: np.ndarray,
+    min_pixel: int | None = None,
+    max_pixel: int | None = None,
+    max_peaks: int = 12,
+    min_prominence_fraction: float = 0.08,
+) -> list[int]:
+    """Find separated local maxima for a Raman Stokes comb."""
+    y = spectrum.astype(np.float64)
+    lo = 1 if min_pixel is None else max(1, int(min_pixel))
+    hi = len(y) - 2 if max_pixel is None else min(len(y) - 2, int(max_pixel))
+    if hi <= lo:
+        raise ValueError("ピーク探索範囲が不正です。")
+
+    region = y[lo : hi + 1]
+    baseline = float(np.percentile(region, 20))
+    signal = region - baseline
+    peak_level = float(np.max(signal))
+    if peak_level <= 0:
+        raise ValueError("ピーク探索範囲に正の信号がありません。")
+    threshold = baseline + peak_level * min_prominence_fraction
+
+    candidates = []
+    for pixel in range(lo, hi + 1):
+        if y[pixel] > threshold and y[pixel] >= y[pixel - 1] and y[pixel] >= y[pixel + 1]:
+            candidates.append(pixel)
+
+    if not candidates:
+        raise ValueError("指定範囲内にピーク候補が見つかりません。")
+
+    candidates.sort(key=lambda px: y[px], reverse=True)
+    selected: list[int] = []
+    min_separation = 8
+    for pixel in candidates:
+        if all(abs(pixel - existing) >= min_separation for existing in selected):
+            selected.append(pixel)
+        if len(selected) >= max_peaks:
+            break
+
+    return sorted(selected)
+
+
+def fit_multiple_gaussian_peaks(
+    spectrum: np.ndarray,
+    min_pixel: int | None = None,
+    max_pixel: int | None = None,
+    max_peaks: int = 12,
+    window: int = 14,
+    sideband: int = 55,
+    threshold_fraction: float = 0.08,
+    min_prominence_fraction: float = 0.08,
+) -> MultiPeakFit:
+    peak_pixels = find_local_peaks(
+        spectrum=spectrum,
+        min_pixel=min_pixel,
+        max_pixel=max_pixel,
+        max_peaks=max_peaks,
+        min_prominence_fraction=min_prominence_fraction,
+    )
+    peaks = [
+        fit_gaussian_log_parabola(
+            spectrum,
+            peak_pixel=peak_pixel,
+            window=window,
+            sideband=sideband,
+            threshold_fraction=threshold_fraction,
+        )
+        for peak_pixel in peak_pixels
+    ]
+    mean_r2 = float(np.mean([peak.r_squared for peak in peaks])) if peaks else float("nan")
+    return MultiPeakFit(
+        peaks=peaks,
+        total_gaussian_area=float(sum(peak.gaussian_area for peak in peaks)),
+        total_direct_area=float(sum(peak.direct_area for peak in peaks)),
+        mean_r_squared=mean_r2,
+        fit_min_pixel=min(peak.fit_min_pixel for peak in peaks),
+        fit_max_pixel=max(peak.fit_max_pixel for peak in peaks),
     )
 
 
