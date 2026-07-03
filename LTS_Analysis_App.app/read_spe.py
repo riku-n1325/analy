@@ -73,6 +73,36 @@ def save_spectrum_csv(path: Path, spectrum: np.ndarray) -> None:
             writer.writerow([pixel, float(value)])
 
 
+def save_image_csv(path: Path, image: np.ndarray) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["y/x", *range(image.shape[1])])
+        for y, row in enumerate(image):
+            writer.writerow([y, *[float(value) for value in row]])
+
+
+def save_spe_like(path: Path, image: np.ndarray, reference_path: str | Path) -> None:
+    """Save a simple SPE file by reusing the reference header and writing float32 image data.
+
+    The original SPE header keeps most acquisition metadata. The datatype is changed to
+    float32 because subtraction can produce negative and fractional values.
+    """
+    reference_path = Path(reference_path)
+    raw = bytearray(reference_path.read_bytes())
+    if len(raw) < SPE_HEADER_BYTES:
+        raise ValueError(f"SPEヘッダが短すぎます: {reference_path}")
+
+    ydim, xdim = image.shape
+    raw[42:44] = np.array([xdim], dtype="<u2").tobytes()
+    raw[656:658] = np.array([ydim], dtype="<u2").tobytes()
+    raw[108:110] = np.array([0], dtype="<u2").tobytes()
+    raw[1446:1450] = np.array([1], dtype="<i4").tobytes()
+
+    header = bytes(raw[:SPE_HEADER_BYTES])
+    data = np.asarray(image, dtype="<f4").tobytes()
+    path.write_bytes(header + data)
+
+
 def save_preview_png(path: Path, image: np.ndarray) -> None:
     arr = image.astype(np.float64)
     lo, hi = np.percentile(arr, [1, 99.7])

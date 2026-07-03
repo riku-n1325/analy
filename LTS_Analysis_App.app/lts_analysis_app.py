@@ -6,6 +6,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from calibrate_density import (  # noqa: E402
     PAPER_N2_STOKES_CROSS_SECTION_M2,
@@ -18,7 +20,7 @@ from calibrate_density import (  # noqa: E402
 )
 from fit_peak import fit_gaussian_log_parabola, fit_multiple_gaussian_peaks  # noqa: E402
 from fit_thomson import fit_broad_gaussian  # noqa: E402
-from read_spe import read_spe, spectrum_from_image  # noqa: E402
+from read_spe import read_spe, save_image_csv, save_spe_like, spectrum_from_image  # noqa: E402
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -89,6 +91,13 @@ class LtsAnalysisApp(tk.Tk):
         self.pressure_signal_kind = tk.StringVar(value="amplitude")
         self.pressure_rows: list[tuple[Path, tk.StringVar]] = []
 
+        self.subtract_out_dir = tk.StringVar(value=str(APP_DIR))
+        self.subtract_scale = tk.StringVar(value="1")
+        self.subtract_save_csv = tk.BooleanVar(value=True)
+        self.subtract_save_spe = tk.BooleanVar(value=True)
+        self.subtract_target_files: list[Path] = []
+        self.subtract_background_files: list[Path] = []
+
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -96,6 +105,7 @@ class LtsAnalysisApp(tk.Tk):
         notebook.pack(fill="both", expand=True)
         self._build_calibration_tab(notebook)
         self._build_pressure_tab(notebook)
+        self._build_subtraction_tab(notebook)
 
     def _build_calibration_tab(self, notebook: ttk.Notebook) -> None:
         root = ttk.Frame(notebook, padding=12)
@@ -236,6 +246,64 @@ class LtsAnalysisApp(tk.Tk):
         self.pressure_result = tk.Text(graph_box, height=8, wrap="word")
         self.pressure_result.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
+    def _build_subtraction_tab(self, notebook: ttk.Notebook) -> None:
+        root = ttk.Frame(notebook, padding=12)
+        notebook.add(root, text="スペクトル差し引き")
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(1, weight=1)
+
+        top_box = ttk.LabelFrame(root, text="保存条件", padding=10)
+        top_box.grid(row=0, column=0, sticky="ew")
+        top_box.columnconfigure(1, weight=1)
+        self._dir_row(top_box, 0, "保存先", self.subtract_out_dir)
+        self._entry(top_box, 0, 3, "差し引き倍率", self.subtract_scale, "-")
+        ttk.Checkbutton(top_box, text="CSV保存", variable=self.subtract_save_csv).grid(row=0, column=4, padx=8)
+        ttk.Checkbutton(top_box, text="SPE保存", variable=self.subtract_save_spe).grid(row=0, column=5, padx=8)
+
+        body = ttk.Frame(root)
+        body.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        target_box = ttk.LabelFrame(body, text="差し引き対象SPE", padding=8)
+        target_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        target_box.columnconfigure(0, weight=1)
+        target_box.rowconfigure(0, weight=1)
+        self.subtract_target_list = tk.Listbox(target_box, height=14, selectmode="extended")
+        self.subtract_target_list.grid(row=0, column=0, sticky="nsew")
+        target_scroll = ttk.Scrollbar(target_box, orient="vertical", command=self.subtract_target_list.yview)
+        target_scroll.grid(row=0, column=1, sticky="ns")
+        self.subtract_target_list.configure(yscrollcommand=target_scroll.set)
+        target_actions = ttk.Frame(target_box)
+        target_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(target_actions, text="SPE追加", command=self._add_subtract_targets).pack(side="left")
+        ttk.Button(target_actions, text="選択削除", command=lambda: self._remove_selected_subtract("target")).pack(side="left", padx=8)
+        ttk.Button(target_actions, text="全削除", command=lambda: self._clear_subtract_files("target")).pack(side="left")
+
+        bg_box = ttk.LabelFrame(body, text="差し引くSPE（複数の場合は平均）", padding=8)
+        bg_box.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        bg_box.columnconfigure(0, weight=1)
+        bg_box.rowconfigure(0, weight=1)
+        self.subtract_background_list = tk.Listbox(bg_box, height=14, selectmode="extended")
+        self.subtract_background_list.grid(row=0, column=0, sticky="nsew")
+        bg_scroll = ttk.Scrollbar(bg_box, orient="vertical", command=self.subtract_background_list.yview)
+        bg_scroll.grid(row=0, column=1, sticky="ns")
+        self.subtract_background_list.configure(yscrollcommand=bg_scroll.set)
+        bg_actions = ttk.Frame(bg_box)
+        bg_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(bg_actions, text="SPE追加", command=self._add_subtract_backgrounds).pack(side="left")
+        ttk.Button(bg_actions, text="選択削除", command=lambda: self._remove_selected_subtract("background")).pack(side="left", padx=8)
+        ttk.Button(bg_actions, text="全削除", command=lambda: self._clear_subtract_files("background")).pack(side="left")
+
+        bottom = ttk.Frame(root)
+        bottom.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        ttk.Button(bottom, text="差し引き保存", command=self.analyze_subtraction).pack(side="left")
+        ttk.Button(bottom, text="ログ消去", command=lambda: self.subtract_log.delete("1.0", "end")).pack(side="left", padx=8)
+
+        self.subtract_log = tk.Text(root, height=10, wrap="word")
+        self.subtract_log.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+
     def _file_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
         ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", padx=8)
@@ -264,6 +332,41 @@ class LtsAnalysisApp(tk.Tk):
         path = filedialog.askdirectory()
         if path:
             var.set(path)
+
+    def _add_subtract_targets(self) -> None:
+        paths = filedialog.askopenfilenames(filetypes=[("SPE files", "*.spe"), ("All files", "*.*")])
+        for path_text in paths:
+            path = Path(path_text)
+            if path not in self.subtract_target_files:
+                self.subtract_target_files.append(path)
+                self.subtract_target_list.insert("end", path.name)
+
+    def _add_subtract_backgrounds(self) -> None:
+        paths = filedialog.askopenfilenames(filetypes=[("SPE files", "*.spe"), ("All files", "*.*")])
+        for path_text in paths:
+            path = Path(path_text)
+            if path not in self.subtract_background_files:
+                self.subtract_background_files.append(path)
+                self.subtract_background_list.insert("end", path.name)
+
+    def _remove_selected_subtract(self, kind: str) -> None:
+        if kind == "target":
+            listbox = self.subtract_target_list
+            files = self.subtract_target_files
+        else:
+            listbox = self.subtract_background_list
+            files = self.subtract_background_files
+        for index in reversed(list(listbox.curselection())):
+            listbox.delete(index)
+            del files[index]
+
+    def _clear_subtract_files(self, kind: str) -> None:
+        if kind == "target":
+            self.subtract_target_list.delete(0, "end")
+            self.subtract_target_files.clear()
+        else:
+            self.subtract_background_list.delete(0, "end")
+            self.subtract_background_files.clear()
 
     def _float(self, var: tk.StringVar, name: str) -> float:
         try:
@@ -574,6 +677,73 @@ class LtsAnalysisApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("解析エラー", str(exc))
             self._log(f"エラー: {exc}\n")
+
+    def analyze_subtraction(self) -> None:
+        try:
+            if not self.subtract_target_files:
+                raise ValueError("差し引き対象SPEを1つ以上追加してください。")
+            if not self.subtract_background_files:
+                raise ValueError("差し引くSPEを1つ以上追加してください。")
+            if not self.subtract_save_csv.get() and not self.subtract_save_spe.get():
+                raise ValueError("CSV保存またはSPE保存の少なくとも一方を選択してください。")
+
+            out_dir = Path(self.subtract_out_dir.get())
+            out_dir.mkdir(parents=True, exist_ok=True)
+            scale = self._float(self.subtract_scale, "差し引き倍率")
+
+            background_images = []
+            reference_shape = None
+            for bg_path in self.subtract_background_files:
+                bg = read_spe(bg_path)
+                image = bg.image.astype(np.float64)
+                if reference_shape is None:
+                    reference_shape = image.shape
+                elif image.shape != reference_shape:
+                    raise ValueError(
+                        f"差し引くSPEの画像サイズが一致しません: {bg_path.name} "
+                        f"{image.shape} != {reference_shape}"
+                    )
+                background_images.append(image)
+
+            background_mean = np.mean(np.stack(background_images, axis=0), axis=0)
+            saved_count = 0
+            log_lines = [
+                "差し引き保存が完了しました。",
+                f"差し引くSPE数: {len(self.subtract_background_files)}",
+                f"差し引き倍率: {scale:g}",
+                f"保存先: {out_dir}",
+            ]
+
+            for target_path in self.subtract_target_files:
+                target = read_spe(target_path)
+                target_image = target.image.astype(np.float64)
+                if target_image.shape != background_mean.shape:
+                    raise ValueError(
+                        f"対象SPEと差し引くSPEの画像サイズが一致しません: {target_path.name} "
+                        f"{target_image.shape} != {background_mean.shape}"
+                    )
+
+                result_image = target_image - scale * background_mean
+                stem = target_path.stem
+
+                if self.subtract_save_csv.get():
+                    csv_path = out_dir / f"{stem}_subtracted.csv"
+                    save_image_csv(csv_path, result_image)
+                    saved_count += 1
+                    log_lines.append(f"CSV: {csv_path.name}")
+
+                if self.subtract_save_spe.get():
+                    spe_path = out_dir / f"{stem}_subtracted.spe"
+                    save_spe_like(spe_path, result_image, target_path)
+                    saved_count += 1
+                    log_lines.append(f"SPE: {spe_path.name}")
+
+            self.subtract_log.insert("end", "\n".join(log_lines) + f"\n保存ファイル数: {saved_count}\n\n")
+            self.subtract_log.see("end")
+        except Exception as exc:
+            messagebox.showerror("差し引きエラー", str(exc))
+            self.subtract_log.insert("end", f"エラー: {exc}\n")
+            self.subtract_log.see("end")
 
     def _log(self, text: str) -> None:
         self.log.insert("end", text + "\n")
