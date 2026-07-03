@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -25,6 +26,7 @@ from read_spe import read_spe, save_image_csv, save_spe_like, spectrum_from_imag
 
 
 APP_DIR = Path(__file__).resolve().parent
+SETTINGS_PATH = APP_DIR / "app_settings.json"
 
 
 def write_summary(path: Path, values: dict[str, tuple[float, str]]) -> None:
@@ -104,8 +106,19 @@ class LtsAnalysisApp(tk.Tk):
         self.viewer_y_min = tk.StringVar(value="")
         self.viewer_y_max = tk.StringVar(value="")
         self.viewer_image_photo: ImageTk.PhotoImage | None = None
+        self._pending_pressure_rows: list[dict[str, str]] = []
+        self._pending_geometry = ""
 
+        self._load_settings()
         self._build_ui()
+        self._restore_pressure_rows()
+        self._refresh_subtract_file_lists()
+        if self._pending_geometry:
+            try:
+                self.geometry(self._pending_geometry)
+            except tk.TclError:
+                pass
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:
         notebook = ttk.Notebook(self)
@@ -114,6 +127,113 @@ class LtsAnalysisApp(tk.Tk):
         self._build_pressure_tab(notebook)
         self._build_subtraction_tab(notebook)
         self._build_viewer_tab(notebook)
+
+    def _settings_vars(self) -> dict[str, tk.StringVar]:
+        return {
+            "thomson_path": self.thomson_path,
+            "raman_path": self.raman_path,
+            "raman_start_path": self.raman_start_path,
+            "raman_end_path": self.raman_end_path,
+            "out_dir": self.out_dir,
+            "y_min": self.y_min,
+            "y_max": self.y_max,
+            "fixed_center": self.fixed_center,
+            "raman_center": self.raman_center,
+            "raman_mask_min": self.raman_mask_min,
+            "raman_mask_max": self.raman_mask_max,
+            "raman_stokes_min": self.raman_stokes_min,
+            "raman_stokes_max": self.raman_stokes_max,
+            "raman_max_peaks": self.raman_max_peaks,
+            "raman_peak_threshold": self.raman_peak_threshold,
+            "nm_per_pixel": self.nm_per_pixel,
+            "laser_wavelength_nm": self.laser_wavelength_nm,
+            "scattering_angle_deg": self.scattering_angle_deg,
+            "instrument_sigma_pixel": self.instrument_sigma_pixel,
+            "pressure_pa": self.pressure_pa,
+            "gas_temperature_k": self.gas_temperature_k,
+            "raman_dsigma": self.raman_dsigma,
+            "thomson_dsigma": self.thomson_dsigma,
+            "raman_shots": self.raman_shots,
+            "thomson_shots": self.thomson_shots,
+            "raman_energy_mj": self.raman_energy_mj,
+            "thomson_energy_mj": self.thomson_energy_mj,
+            "calibration_mode": self.calibration_mode,
+            "thomson_time_h": self.thomson_time_h,
+            "raman_start_time_h": self.raman_start_time_h,
+            "raman_end_time_h": self.raman_end_time_h,
+            "raman_start_pressure_pa": self.raman_start_pressure_pa,
+            "raman_end_pressure_pa": self.raman_end_pressure_pa,
+            "raman_start_shots": self.raman_start_shots,
+            "raman_end_shots": self.raman_end_shots,
+            "raman_start_energy_mj": self.raman_start_energy_mj,
+            "raman_end_energy_mj": self.raman_end_energy_mj,
+            "correction_factor": self.correction_factor,
+            "area_kind": self.area_kind,
+            "pressure_folder": self.pressure_folder,
+            "pressure_peak_center": self.pressure_peak_center,
+            "pressure_mask_min": self.pressure_mask_min,
+            "pressure_mask_max": self.pressure_mask_max,
+            "pressure_signal_kind": self.pressure_signal_kind,
+            "subtract_out_dir": self.subtract_out_dir,
+            "subtract_scale": self.subtract_scale,
+            "viewer_path": self.viewer_path,
+            "viewer_y_min": self.viewer_y_min,
+            "viewer_y_max": self.viewer_y_max,
+        }
+
+    def _settings_bools(self) -> dict[str, tk.BooleanVar]:
+        return {
+            "subtract_save_csv": self.subtract_save_csv,
+            "subtract_save_spe": self.subtract_save_spe,
+        }
+
+    def _load_settings(self) -> None:
+        if not SETTINGS_PATH.exists():
+            return
+        try:
+            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        values = data.get("values", {})
+        if isinstance(values, dict):
+            for name, var in self._settings_vars().items():
+                if name in values:
+                    var.set(str(values[name]))
+
+        bools = data.get("booleans", {})
+        if isinstance(bools, dict):
+            for name, var in self._settings_bools().items():
+                if name in bools:
+                    var.set(bool(bools[name]))
+
+        self.subtract_target_files = [Path(path) for path in data.get("subtract_target_files", []) if path]
+        self.subtract_background_files = [Path(path) for path in data.get("subtract_background_files", []) if path]
+        rows = data.get("pressure_rows", [])
+        if isinstance(rows, list):
+            self._pending_pressure_rows = [row for row in rows if isinstance(row, dict)]
+        self._pending_geometry = str(data.get("geometry", ""))
+
+    def _save_settings(self) -> None:
+        data = {
+            "values": {name: var.get() for name, var in self._settings_vars().items()},
+            "booleans": {name: bool(var.get()) for name, var in self._settings_bools().items()},
+            "subtract_target_files": [str(path) for path in self.subtract_target_files],
+            "subtract_background_files": [str(path) for path in self.subtract_background_files],
+            "pressure_rows": [
+                {"path": str(path), "pressure": pressure_var.get()}
+                for path, pressure_var in self.pressure_rows
+            ],
+            "geometry": self.geometry(),
+        }
+        SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _on_close(self) -> None:
+        try:
+            self._save_settings()
+        except Exception as exc:
+            messagebox.showwarning("設定保存エラー", f"入力値を保存できませんでした。\n{exc}")
+        self.destroy()
 
     def _build_calibration_tab(self, notebook: ttk.Notebook) -> None:
         root = ttk.Frame(notebook, padding=12)
@@ -424,6 +544,50 @@ class LtsAnalysisApp(tk.Tk):
         else:
             self.subtract_background_list.delete(0, "end")
             self.subtract_background_files.clear()
+
+    def _refresh_subtract_file_lists(self) -> None:
+        self.subtract_target_list.delete(0, "end")
+        for path in self.subtract_target_files:
+            self.subtract_target_list.insert("end", path.name)
+        self.subtract_background_list.delete(0, "end")
+        for path in self.subtract_background_files:
+            self.subtract_background_list.insert("end", path.name)
+
+    def _populate_pressure_rows(self, files: list[Path], pressures: dict[str, str] | None = None) -> None:
+        pressures = pressures or {}
+        for child in self.pressure_table.winfo_children():
+            child.destroy()
+        self.pressure_rows.clear()
+        self.pressure_result.delete("1.0", "end")
+        self.pressure_plot.delete("all")
+
+        if not files:
+            return
+
+        ttk.Label(self.pressure_table, text="ファイル名", width=36).grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        ttk.Label(self.pressure_table, text="圧力", width=12).grid(row=0, column=1, sticky="w", padx=2, pady=2)
+        ttk.Label(self.pressure_table, text="単位", width=8).grid(row=0, column=2, sticky="w", padx=2, pady=2)
+
+        for row, path in enumerate(files, start=1):
+            pressure_var = tk.StringVar(value=pressures.get(str(path), pressures.get(path.name, "")))
+            ttk.Label(self.pressure_table, text=path.name, width=42).grid(row=row, column=0, sticky="w", padx=2, pady=2)
+            ttk.Entry(self.pressure_table, textvariable=pressure_var, width=14).grid(row=row, column=1, sticky="w", padx=2, pady=2)
+            ttk.Label(self.pressure_table, text="Pa", width=8).grid(row=row, column=2, sticky="w", padx=2, pady=2)
+            self.pressure_rows.append((path, pressure_var))
+
+    def _restore_pressure_rows(self) -> None:
+        if not self._pending_pressure_rows:
+            return
+        files: list[Path] = []
+        pressures: dict[str, str] = {}
+        for row in self._pending_pressure_rows:
+            path_text = str(row.get("path", ""))
+            if not path_text:
+                continue
+            path = Path(path_text)
+            files.append(path)
+            pressures[str(path)] = str(row.get("pressure", ""))
+        self._populate_pressure_rows(files, pressures)
 
     def _float(self, var: tk.StringVar, name: str) -> float:
         try:
@@ -992,17 +1156,7 @@ class LtsAnalysisApp(tk.Tk):
         if not files:
             messagebox.showinfo("SPEなし", "選択フォルダに .spe ファイルがありません。")
             return
-
-        ttk.Label(self.pressure_table, text="ファイル名", width=36).grid(row=0, column=0, sticky="w", padx=2, pady=2)
-        ttk.Label(self.pressure_table, text="圧力", width=12).grid(row=0, column=1, sticky="w", padx=2, pady=2)
-        ttk.Label(self.pressure_table, text="単位", width=8).grid(row=0, column=2, sticky="w", padx=2, pady=2)
-
-        for row, path in enumerate(files, start=1):
-            pressure_var = tk.StringVar()
-            ttk.Label(self.pressure_table, text=path.name, width=42).grid(row=row, column=0, sticky="w", padx=2, pady=2)
-            ttk.Entry(self.pressure_table, textvariable=pressure_var, width=14).grid(row=row, column=1, sticky="w", padx=2, pady=2)
-            ttk.Label(self.pressure_table, text="Pa", width=8).grid(row=row, column=2, sticky="w", padx=2, pady=2)
-            self.pressure_rows.append((path, pressure_var))
+        self._populate_pressure_rows(files)
 
     def analyze_pressure_dependence(self) -> None:
         try:
