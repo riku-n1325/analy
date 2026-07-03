@@ -59,6 +59,11 @@ def linear_baseline(
 
     x_left = (left_min + left_max) / 2.0
     x_right = (right_min + right_max) / 2.0
+    if x_right == x_left:
+        raise ValueError(
+            "トムソン背景の左範囲と右範囲の代表x座標が同じです。"
+            "背景左最小/最大と背景右最小/最大が別の範囲になるように設定してください。"
+        )
     y_left = float(np.median(left))
     y_right = float(np.median(right))
 

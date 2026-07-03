@@ -414,17 +414,26 @@ class LtsAnalysisApp(tk.Tk):
         self._entry(param_box, 3, 3, "ピークしきい値", self.raman_peak_threshold, "-")
         self._entry(param_box, 3, 4, "TS時刻", self.thomson_time_h, "h")
         self._entry(param_box, 3, 5, "補正係数", self.correction_factor, "-")
-        self._entry(param_box, 4, 0, "開始時刻", self.raman_start_time_h, "h")
-        self._entry(param_box, 4, 1, "開始圧力", self.raman_start_pressure_pa, "Pa")
-        self._entry(param_box, 4, 2, "開始shot数", self.raman_start_shots, "shots")
-        self._entry(param_box, 4, 3, "開始Energy", self.raman_start_energy_mj, "mJ")
-        self._entry(param_box, 5, 0, "終了時刻", self.raman_end_time_h, "h")
-        self._entry(param_box, 5, 1, "終了圧力", self.raman_end_pressure_pa, "Pa")
-        self._entry(param_box, 5, 2, "終了shot数", self.raman_end_shots, "shots")
-        self._entry(param_box, 5, 3, "終了Energy", self.raman_end_energy_mj, "mJ")
+        self._entry(param_box, 4, 0, "TS fit最小", self.ts_fit_min, "pixel")
+        self._entry(param_box, 4, 1, "TS fit最大", self.ts_fit_max, "pixel")
+        self._entry(param_box, 4, 2, "背景左最小", self.ts_baseline_left_min, "pixel")
+        self._entry(param_box, 4, 3, "背景左最大", self.ts_baseline_left_max, "pixel")
+        self._entry(param_box, 4, 4, "背景右最小", self.ts_baseline_right_min, "pixel")
+        self._entry(param_box, 4, 5, "背景右最大", self.ts_baseline_right_max, "pixel")
+        self._entry(param_box, 5, 0, "平滑化幅", self.ts_median_width, "pixel")
+        self._entry(param_box, 5, 1, "fitしきい値", self.ts_threshold_fraction, "-")
+
+        self._entry(param_box, 6, 0, "開始時刻", self.raman_start_time_h, "h")
+        self._entry(param_box, 6, 1, "開始圧力", self.raman_start_pressure_pa, "Pa")
+        self._entry(param_box, 6, 2, "開始shot数", self.raman_start_shots, "shots")
+        self._entry(param_box, 6, 3, "開始Energy", self.raman_start_energy_mj, "mJ")
+        self._entry(param_box, 7, 0, "終了時刻", self.raman_end_time_h, "h")
+        self._entry(param_box, 7, 1, "終了圧力", self.raman_end_pressure_pa, "Pa")
+        self._entry(param_box, 7, 2, "終了shot数", self.raman_end_shots, "shots")
+        self._entry(param_box, 7, 3, "終了Energy", self.raman_end_energy_mj, "mJ")
 
         area_frame = ttk.Frame(param_box)
-        area_frame.grid(row=6, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        area_frame.grid(row=8, column=0, columnspan=6, sticky="w", pady=(8, 0))
         ttk.Label(area_frame, text="校正").pack(side="left")
         ttk.Radiobutton(area_frame, text="単一ラマン", value="single", variable=self.calibration_mode).pack(side="left", padx=8)
         ttk.Radiobutton(area_frame, text="時間補間", value="drift", variable=self.calibration_mode).pack(side="left")
@@ -1130,6 +1139,13 @@ class LtsAnalysisApp(tk.Tk):
             raise ValueError(f"{name} は正の値を入力してください: {value}")
         return value
 
+    @staticmethod
+    def _validate_pixel_range(min_value: int, max_value: int, name: str) -> None:
+        if min_value < 0 or max_value < 0:
+            raise ValueError(f"{name} は0以上のpixel値を入力してください: {min_value}, {max_value}")
+        if min_value >= max_value:
+            raise ValueError(f"{name} は最小値 < 最大値にしてください: {min_value}, {max_value}")
+
     def analyze(self) -> None:
         stage = "解析開始"
         debug_values: dict[str, float | int | str] = {}
@@ -1185,6 +1201,19 @@ class LtsAnalysisApp(tk.Tk):
             ts_baseline_right_max = self._int(self.ts_baseline_right_max, "背景右最大")
             ts_median_width = self._int(self.ts_median_width, "平滑化幅")
             ts_threshold_fraction = self._float(self.ts_threshold_fraction, "fitしきい値")
+            self._validate_pixel_range(y_min, y_max, "TS y範囲")
+            self._validate_pixel_range(ts_fit_min, ts_fit_max, "TS fit範囲")
+            self._validate_pixel_range(ts_baseline_left_min, ts_baseline_left_max, "背景左範囲")
+            self._validate_pixel_range(ts_baseline_right_min, ts_baseline_right_max, "背景右範囲")
+            left_center = (ts_baseline_left_min + ts_baseline_left_max) / 2.0
+            right_center = (ts_baseline_right_min + ts_baseline_right_max) / 2.0
+            if left_center == right_center:
+                raise ValueError(
+                    "背景左範囲と背景右範囲の代表x座標が同じです。"
+                    "別々の左右範囲を入力してください。"
+                )
+            self._positive(float(ts_median_width), "平滑化幅")
+            self._positive(ts_threshold_fraction, "fitしきい値")
             debug_values.update(
                 {
                     "mode": self.calibration_mode.get(),
