@@ -1125,7 +1125,7 @@ class LtsAnalysisApp(tk.Tk):
 
     @staticmethod
     def _positive(value: float, name: str) -> float:
-        if value <= 0:
+        if not np.isfinite(value) or value <= 0:
             raise ValueError(f"{name} は正の値を入力してください: {value}")
         return value
 
@@ -1156,19 +1156,21 @@ class LtsAnalysisApp(tk.Tk):
             raman_stokes_max = self._optional_int(self.raman_stokes_max, "Stokes探索最大")
             raman_max_peaks = self._int(self.raman_max_peaks, "最大ピーク数")
             raman_peak_threshold = self._float(self.raman_peak_threshold, "ピークしきい値")
-            nm_per_pixel = self._float(self.nm_per_pixel, "波長校正")
-            laser_nm = self._float(self.laser_wavelength_nm, "レーザー波長")
-            angle = self._float(self.scattering_angle_deg, "散乱角")
+            nm_per_pixel = self._positive(self._float(self.nm_per_pixel, "波長校正"), "波長校正")
+            laser_nm = self._positive(self._float(self.laser_wavelength_nm, "レーザー波長"), "レーザー波長")
+            angle = self._positive(self._float(self.scattering_angle_deg, "散乱角"), "散乱角")
             inst_sigma = self._float(self.instrument_sigma_pixel, "装置幅sigma")
-            pressure = self._float(self.pressure_pa, "水素圧力")
-            gas_temp = self._float(self.gas_temperature_k, "気体温度")
-            raman_dsigma = self._float(self.raman_dsigma, "ラマン有効断面積")
-            thomson_dsigma = self._float(self.thomson_dsigma, "TS断面積")
+            if inst_sigma < 0:
+                raise ValueError(f"装置幅sigma は0以上の値を入力してください: {inst_sigma}")
+            pressure = self._positive(self._float(self.pressure_pa, "水素圧力"), "水素圧力")
+            gas_temp = self._positive(self._float(self.gas_temperature_k, "気体温度"), "気体温度")
+            raman_dsigma = self._positive(self._float(self.raman_dsigma, "ラマン有効断面積"), "ラマン有効断面積")
+            thomson_dsigma = self._positive(self._float(self.thomson_dsigma, "TS断面積"), "TS断面積")
             raman_shots = self._float(self.raman_shots, "ラマンshot数")
             thomson_shots = self._float(self.thomson_shots, "TS shot数")
             raman_energy_mj = self._float(self.raman_energy_mj, "ラマンEnergy")
             thomson_energy_mj = self._float(self.thomson_energy_mj, "TS Energy")
-            correction = self._float(self.correction_factor, "補正係数")
+            correction = self._positive(self._float(self.correction_factor, "補正係数"), "補正係数")
             ts_fit_min = self._int(self.ts_fit_min, "TS fit最小")
             ts_fit_max = self._int(self.ts_fit_max, "TS fit最大")
             ts_baseline_left_min = self._int(self.ts_baseline_left_min, "背景左最小")
@@ -1199,6 +1201,7 @@ class LtsAnalysisApp(tk.Tk):
                 ts_area = ts_fit.gaussian_area
             else:
                 ts_area = ts_fit.direct_area
+            self._positive(float(ts_area), "トムソン散乱スペクトル面積")
 
             self._positive(thomson_shots, "TS shot数")
             self._positive(thomson_energy_mj, "TS Energy")
@@ -1257,6 +1260,8 @@ class LtsAnalysisApp(tk.Tk):
                 drift_rate = (k_end - k_start) / (t_end - t_start)
                 raman_fit = raman_start_info["fit"]
                 raman_area = float(raman_start_info["area"])
+                self._positive(raman_area, "開始ラマン散乱スペクトル面積")
+                self._positive(float(raman_end_info["area"]), "終了ラマン散乱スペクトル面積")
                 raman_r_squared = float(raman_start_info["r_squared"])
                 raman_peak_count = int(raman_start_info["peak_count"])
                 raman_peak_pixels = str(raman_start_info["peak_pixels"])
@@ -1274,6 +1279,7 @@ class LtsAnalysisApp(tk.Tk):
                 )
                 raman_fit = raman_info["fit"]
                 raman_area = float(raman_info["area"])
+                self._positive(raman_area, "ラマン散乱スペクトル面積")
                 raman_r_squared = float(raman_info["r_squared"])
                 raman_peak_count = int(raman_info["peak_count"])
                 raman_peak_pixels = str(raman_info["peak_pixels"])

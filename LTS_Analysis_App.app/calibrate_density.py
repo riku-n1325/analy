@@ -26,6 +26,10 @@ def read_summary_value(path: str | Path, name: str) -> float:
 
 
 def gas_density_from_pressure(pressure_pa: float, gas_temperature_k: float) -> float:
+    if pressure_pa <= 0:
+        raise ValueError("水素圧力は正の値を入力してください。")
+    if gas_temperature_k <= 0:
+        raise ValueError("気体温度は正の値を入力してください。0 Kは使えません。")
     return pressure_pa / (K_B * gas_temperature_k)
 
 
@@ -68,7 +72,11 @@ def electron_density_from_thomson_counts(
         raise ValueError("throughput_k_m must be positive.")
     if thomson_cross_section_m2 <= 0:
         raise ValueError("thomson_cross_section_m2 must be positive.")
+    if correction_factor <= 0:
+        raise ValueError("correction_factor must be positive.")
     counts_per_shot = thomson_counts / thomson_shots
+    if counts_per_shot <= 0:
+        raise ValueError("thomson_counts per shot must be positive.")
     return correction_factor * counts_per_shot / (throughput_k_m * thomson_cross_section_m2)
 
 
@@ -120,9 +128,14 @@ def electron_density_from_raman(
 
 
 def scattering_wave_number(laser_wavelength_nm: float, scattering_angle_deg: float) -> float:
+    if laser_wavelength_nm <= 0:
+        raise ValueError("レーザー波長は正の値を入力してください。")
     laser_wavelength_m = laser_wavelength_nm * 1e-9
     theta = math.radians(scattering_angle_deg)
-    return 4.0 * math.pi * math.sin(theta / 2.0) / laser_wavelength_m
+    sin_half = math.sin(theta / 2.0)
+    if sin_half <= 0:
+        raise ValueError("散乱角は0度より大きい値を入力してください。")
+    return 4.0 * math.pi * sin_half / laser_wavelength_m
 
 
 def debye_length_m(electron_temperature_ev: float, electron_density_m3: float) -> float:
@@ -151,6 +164,10 @@ def electron_temperature_from_width(
     scattering_angle_deg: float,
     instrument_sigma_pixel: float = 0.0,
 ) -> float:
+    if nm_per_pixel <= 0:
+        raise ValueError("波長校正は正の値を入力してください。")
+    if laser_wavelength_nm <= 0:
+        raise ValueError("レーザー波長は正の値を入力してください。")
     sigma_pixel_physical = math.sqrt(max(sigma_pixel**2 - instrument_sigma_pixel**2, 0.0))
     sigma_lambda_m = sigma_pixel_physical * nm_per_pixel * 1e-9
     laser_wavelength_m = laser_wavelength_nm * 1e-9
