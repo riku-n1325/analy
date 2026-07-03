@@ -61,6 +61,69 @@ def write_fit_curve(
             )
 
 
+def moving_average(values: np.ndarray, width: int = 5) -> np.ndarray:
+    if width <= 1:
+        return values.astype(np.float64)
+    if width % 2 == 0:
+        width += 1
+    kernel = np.ones(width, dtype=np.float64) / width
+    padded = np.pad(values.astype(np.float64), width // 2, mode="edge")
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def least_squares_gaussian_auto(spectrum: np.ndarray) -> dict[str, np.ndarray | float]:
+    y = spectrum.astype(np.float64)
+    if y.size < 12:
+        raise ValueError("フィットには12 pixel以上のスペクトルが必要です。")
+
+    smooth = moving_average(y, width=7)
+    peak_pixel = int(np.argmax(smooth))
+    n = y.size
+    center_span = max(8, min(80, n // 5))
+    center_min = max(0, peak_pixel - center_span)
+    center_max = min(n - 1, peak_pixel + center_span)
+    centers = np.linspace(center_min, center_max, min(81, center_max - center_min + 1))
+    max_sigma = max(6.0, n / 3.0)
+    sigmas = np.geomspace(2.0, max_sigma, 90)
+    x = np.arange(n, dtype=np.float64)
+
+    best: tuple[float, float, float, float, np.ndarray] | None = None
+    for center in centers:
+        for sigma in sigmas:
+            gaussian = np.exp(-0.5 * ((x - center) / sigma) ** 2)
+            design = np.column_stack([gaussian, np.ones_like(gaussian)])
+            amplitude, baseline = np.linalg.lstsq(design, y, rcond=None)[0]
+            if amplitude <= 0:
+                continue
+            fit_curve = amplitude * gaussian + baseline
+            sse = float(np.sum((y - fit_curve) ** 2))
+            if best is None or sse < best[0]:
+                best = (sse, float(center), float(sigma), float(amplitude), fit_curve)
+
+    if best is None:
+        raise ValueError("正の振幅を持つガウスフィットを見つけられませんでした。")
+
+    sse, center, sigma, amplitude, fit_curve = best
+    baseline = float(np.mean(fit_curve - amplitude * np.exp(-0.5 * ((x - center) / sigma) ** 2)))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r_squared = float(1.0 - sse / ss_tot) if ss_tot > 0 else float("nan")
+    fwhm = float(2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma)
+    area = float(amplitude * sigma * np.sqrt(2.0 * np.pi))
+    return {
+        "x": x,
+        "data": y,
+        "fit": fit_curve,
+        "residual": y - fit_curve,
+        "center": center,
+        "sigma": sigma,
+        "fwhm": fwhm,
+        "amplitude": amplitude,
+        "baseline": baseline,
+        "area": area,
+        "r_squared": r_squared,
+    }
+
+
 class LtsAnalysisApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -443,8 +506,36 @@ class LtsAnalysisApp(tk.Tk):
         self.pressure_result.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
     def _build_subtraction_tab(self, notebook: ttk.Notebook) -> None:
-        root = ttk.Frame(notebook, padding=12)
-        notebook.add(root, text="スペクトル差し引き")
+        tab = ttk.Frame(notebook)
+        notebook.add(tab, text="スペクトル差し引き")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(tab, highlightthickness=0)
+        y_scroll = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        x_scroll = ttk.Scrollbar(tab, orient="horizontal", command=canvas.xview)
+        canvas.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+
+        root = ttk.Frame(canvas, padding=12)
+        window_id = canvas.create_window((0, 0), window=root, anchor="nw")
+
+        def update_scrollregion(_event: tk.Event | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def update_inner_width(event: tk.Event) -> None:
+            canvas.itemconfigure(window_id, width=max(event.width, root.winfo_reqwidth()))
+            update_scrollregion()
+
+        def on_mousewheel(event: tk.Event) -> None:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        root.bind("<Configure>", update_scrollregion)
+        canvas.bind("<Configure>", update_inner_width)
+        canvas.bind("<Enter>", lambda _event: canvas.bind_all("<MouseWheel>", on_mousewheel))
+        canvas.bind("<Leave>", lambda _event: canvas.unbind_all("<MouseWheel>"))
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
         root.rowconfigure(2, weight=1)
@@ -499,9 +590,9 @@ class LtsAnalysisApp(tk.Tk):
         preview_box.columnconfigure(0, weight=1)
         preview_box.columnconfigure(1, weight=1)
         preview_box.rowconfigure(0, weight=1)
-        self.subtract_image_canvas = tk.Canvas(preview_box, bg="white", height=180)
+        self.subtract_image_canvas = tk.Canvas(preview_box, bg="white", width=760, height=340)
         self.subtract_image_canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self.subtract_spectrum_canvas = tk.Canvas(preview_box, bg="white", height=180)
+        self.subtract_spectrum_canvas = tk.Canvas(preview_box, bg="white", width=760, height=340)
         self.subtract_spectrum_canvas.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         fit_box = ttk.LabelFrame(root, text="スペクトルフィッティング", padding=8)
@@ -512,35 +603,12 @@ class LtsAnalysisApp(tk.Tk):
 
         fit_controls = ttk.Frame(fit_box)
         fit_controls.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ttk.Label(fit_controls, text="種別").pack(side="left")
-        ttk.Radiobutton(fit_controls, text="トムソン", value="thomson", variable=self.subtract_fit_kind).pack(side="left", padx=8)
-        ttk.Radiobutton(fit_controls, text="ラマン", value="raman", variable=self.subtract_fit_kind).pack(side="left")
-        ttk.Button(fit_controls, text="フィット実行", command=self.fit_subtracted_spectrum).pack(side="left", padx=12)
+        ttk.Label(fit_controls, text="選択中のトムソン散乱スペクトルを自動で最小二乗ガウスフィットします。").pack(side="left")
+        ttk.Button(fit_controls, text="トムソンガウスフィット", command=self.fit_subtracted_spectrum).pack(side="left", padx=12)
 
-        ts_fit_box = ttk.Frame(fit_controls)
-        ts_fit_box.pack(side="left", fill="x", expand=True)
-        self._entry(ts_fit_box, 0, 0, "TS fit最小", self.ts_fit_min, "pixel")
-        self._entry(ts_fit_box, 0, 1, "TS fit最大", self.ts_fit_max, "pixel")
-        self._entry(ts_fit_box, 0, 2, "背景左最小", self.ts_baseline_left_min, "pixel")
-        self._entry(ts_fit_box, 0, 3, "背景左最大", self.ts_baseline_left_max, "pixel")
-        self._entry(ts_fit_box, 0, 4, "背景右最小", self.ts_baseline_right_min, "pixel")
-        self._entry(ts_fit_box, 0, 5, "背景右最大", self.ts_baseline_right_max, "pixel")
-        self._entry(ts_fit_box, 1, 0, "平滑化幅", self.ts_median_width, "pixel")
-        self._entry(ts_fit_box, 1, 1, "fitしきい値", self.ts_threshold_fraction, "-")
-        self._entry(ts_fit_box, 1, 2, "TS y最小", self.y_min, "pixel")
-        self._entry(ts_fit_box, 1, 3, "TS y最大", self.y_max, "pixel")
-        ttk.Checkbutton(ts_fit_box, text="レーザー中心を固定", variable=self.ts_fix_center).grid(
-            row=1,
-            column=4,
-            columnspan=2,
-            sticky="w",
-            padx=4,
-            pady=3,
-        )
-
-        self.subtract_fit_canvas = tk.Canvas(fit_box, bg="white", height=260)
+        self.subtract_fit_canvas = tk.Canvas(fit_box, bg="white", width=900, height=420)
         self.subtract_fit_canvas.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(8, 0))
-        self.subtract_residual_canvas = tk.Canvas(fit_box, bg="white", height=260)
+        self.subtract_residual_canvas = tk.Canvas(fit_box, bg="white", width=900, height=420)
         self.subtract_residual_canvas.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(8, 0))
 
         bottom = ttk.Frame(root)
@@ -1447,87 +1515,38 @@ class LtsAnalysisApp(tk.Tk):
     def fit_subtracted_spectrum(self) -> None:
         try:
             target_path, image = self._fit_image_for_subtraction_tab()
-            y_min = self._optional_int(self.y_min, "TS y最小")
-            y_max = self._optional_int(self.y_max, "TS y最大")
-            spectrum = spectrum_from_image(image, y_min, y_max)
-            x_all = np.arange(spectrum.size, dtype=np.float64)
+            spectrum = image.sum(axis=0)
+            fit = least_squares_gaussian_auto(spectrum)
+            x_values = fit["x"]
+            data_values = fit["data"]
+            fit_values = fit["fit"]
+            residual = fit["residual"]
+            if not isinstance(x_values, np.ndarray) or not isinstance(data_values, np.ndarray):
+                raise ValueError("フィット結果を描画できません。")
+            if not isinstance(fit_values, np.ndarray) or not isinstance(residual, np.ndarray):
+                raise ValueError("フィット結果を描画できません。")
 
-            if self.subtract_fit_kind.get() == "thomson":
-                center = self._float(self.fixed_center, "レーザー中心")
-                ts_fit_min = self._int(self.ts_fit_min, "TS fit最小")
-                ts_fit_max = self._int(self.ts_fit_max, "TS fit最大")
-                ts_baseline_left_min = self._int(self.ts_baseline_left_min, "背景左最小")
-                ts_baseline_left_max = self._int(self.ts_baseline_left_max, "背景左最大")
-                ts_baseline_right_min = self._int(self.ts_baseline_right_min, "背景右最小")
-                ts_baseline_right_max = self._int(self.ts_baseline_right_max, "背景右最大")
-                ts_median_width = self._int(self.ts_median_width, "平滑化幅")
-                ts_threshold_fraction = self._float(self.ts_threshold_fraction, "fitしきい値")
-                fit, smooth, _baseline, fit_curve = fit_broad_gaussian(
-                    spectrum,
-                    fit_min=ts_fit_min,
-                    fit_max=ts_fit_max,
-                    baseline_left_min=ts_baseline_left_min,
-                    baseline_left_max=ts_baseline_left_max,
-                    baseline_right_min=ts_baseline_right_min,
-                    baseline_right_max=ts_baseline_right_max,
-                    median_width=ts_median_width,
-                    threshold_fraction=ts_threshold_fraction,
-                    fixed_center=center if self.ts_fix_center.get() else None,
-                )
-                residual = smooth - fit_curve
-                self._draw_fit_overlay_canvas(
-                    self.subtract_fit_canvas,
-                    x_all,
-                    smooth,
-                    fit_curve,
-                    f"トムソンフィット: {target_path.name}",
-                )
-                self._draw_spectrum_canvas(self.subtract_residual_canvas, residual, "残差", x_start=0)
-                self.subtract_log.insert(
-                    "end",
-                    "\n".join(
-                        [
-                            f"トムソンフィット完了: {target_path.name}",
-                            f"center={fit.center_pixel:.3f} pixel",
-                            f"FWHM={fit.fwhm_pixel:.3f} pixel",
-                            f"area={fit.gaussian_area:.6e} count*pixel",
-                            f"R^2={fit.r_squared:.4f}",
-                            "",
-                        ]
-                    ),
-                )
-            else:
-                raman_center = self._optional_float(self.raman_center, "ラマン中心")
-                fit = fit_gaussian_log_parabola(
-                    spectrum,
-                    peak_pixel=None if raman_center is None else int(round(raman_center)),
-                    window=45,
-                    sideband=100,
-                    fixed_center=raman_center,
-                )
-                fit_curve = fit.baseline + fit.amplitude * np.exp(-0.5 * ((x_all - fit.center_pixel) / fit.sigma_pixel) ** 2)
-                residual = spectrum.astype(np.float64) - fit_curve
-                self._draw_fit_overlay_canvas(
-                    self.subtract_fit_canvas,
-                    x_all,
-                    spectrum.astype(np.float64),
-                    fit_curve,
-                    f"ラマンフィット: {target_path.name}",
-                )
-                self._draw_spectrum_canvas(self.subtract_residual_canvas, residual, "残差", x_start=0)
-                self.subtract_log.insert(
-                    "end",
-                    "\n".join(
-                        [
-                            f"ラマンフィット完了: {target_path.name}",
-                            f"center={fit.center_pixel:.3f} pixel",
-                            f"FWHM={fit.fwhm_pixel:.3f} pixel",
-                            f"area={fit.gaussian_area:.6e} count*pixel",
-                            f"R^2={fit.r_squared:.4f}",
-                            "",
-                        ]
-                    ),
-                )
+            self._draw_fit_overlay_canvas(
+                self.subtract_fit_canvas,
+                x_values,
+                data_values,
+                fit_values,
+                f"トムソン最小二乗ガウスフィット: {target_path.name}",
+            )
+            self._draw_spectrum_canvas(self.subtract_residual_canvas, residual, "残差", x_start=0)
+            self.subtract_log.insert(
+                "end",
+                "\n".join(
+                    [
+                        f"トムソン最小二乗ガウスフィット完了: {target_path.name}",
+                        f"center={float(fit['center']):.3f} pixel",
+                        f"FWHM={float(fit['fwhm']):.3f} pixel",
+                        f"area={float(fit['area']):.6e} count*pixel",
+                        f"R^2={float(fit['r_squared']):.4f}",
+                        "",
+                    ]
+                ),
+            )
             self.subtract_log.see("end")
         except Exception as exc:
             messagebox.showerror("フィットエラー", str(exc))
