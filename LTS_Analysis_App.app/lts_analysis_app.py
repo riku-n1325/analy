@@ -130,6 +130,7 @@ class LtsAnalysisApp(tk.Tk):
         self.subtract_target_files: list[Path] = []
         self.subtract_background_files: list[Path] = []
         self.subtract_image_photo: ImageTk.PhotoImage | None = None
+        self.subtract_fit_kind = tk.StringVar(value="thomson")
 
         self.viewer_path = tk.StringVar()
         self.viewer_x_min = tk.StringVar(value="")
@@ -137,6 +138,10 @@ class LtsAnalysisApp(tk.Tk):
         self.viewer_y_min = tk.StringVar(value="")
         self.viewer_y_max = tk.StringVar(value="")
         self.viewer_image_photo: ImageTk.PhotoImage | None = None
+        self.viewer_current_image: np.ndarray | None = None
+        self.viewer_display: dict[str, float | tuple[int, int]] = {}
+        self.viewer_drag_start: tuple[int, int] | None = None
+        self.viewer_drag_rect_id: int | None = None
         self._pending_pressure_rows: list[dict[str, str]] = []
         self._pending_geometry = ""
 
@@ -211,6 +216,7 @@ class LtsAnalysisApp(tk.Tk):
             "pressure_signal_kind": self.pressure_signal_kind,
             "subtract_out_dir": self.subtract_out_dir,
             "subtract_scale": self.subtract_scale,
+            "subtract_fit_kind": self.subtract_fit_kind,
             "viewer_path": self.viewer_path,
             "viewer_x_min": self.viewer_x_min,
             "viewer_x_max": self.viewer_x_max,
@@ -305,7 +311,7 @@ class LtsAnalysisApp(tk.Tk):
         canvas.bind("<Enter>", lambda _event: canvas.bind_all("<MouseWheel>", on_mousewheel))
         canvas.bind("<Leave>", lambda _event: canvas.unbind_all("<MouseWheel>"))
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(4, weight=1)
+        root.rowconfigure(3, weight=1)
 
         file_box = ttk.LabelFrame(root, text="ファイル", padding=10)
         file_box.grid(row=0, column=0, sticky="ew")
@@ -354,27 +360,6 @@ class LtsAnalysisApp(tk.Tk):
         self._entry(param_box, 5, 2, "終了shot数", self.raman_end_shots, "shots")
         self._entry(param_box, 5, 3, "終了Energy", self.raman_end_energy_mj, "mJ")
 
-        ts_fit_box = ttk.LabelFrame(root, text="TSフィット条件", padding=10)
-        ts_fit_box.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        for i in range(6):
-            ts_fit_box.columnconfigure(i, weight=1)
-        self._entry(ts_fit_box, 0, 0, "TS fit最小", self.ts_fit_min, "pixel")
-        self._entry(ts_fit_box, 0, 1, "TS fit最大", self.ts_fit_max, "pixel")
-        self._entry(ts_fit_box, 0, 2, "背景左最小", self.ts_baseline_left_min, "pixel")
-        self._entry(ts_fit_box, 0, 3, "背景左最大", self.ts_baseline_left_max, "pixel")
-        self._entry(ts_fit_box, 0, 4, "背景右最小", self.ts_baseline_right_min, "pixel")
-        self._entry(ts_fit_box, 0, 5, "背景右最大", self.ts_baseline_right_max, "pixel")
-        self._entry(ts_fit_box, 1, 0, "平滑化幅", self.ts_median_width, "pixel")
-        self._entry(ts_fit_box, 1, 1, "fitしきい値", self.ts_threshold_fraction, "-")
-        ttk.Checkbutton(ts_fit_box, text="レーザー中心を固定", variable=self.ts_fix_center).grid(
-            row=1,
-            column=2,
-            columnspan=2,
-            sticky="w",
-            padx=4,
-            pady=3,
-        )
-
         area_frame = ttk.Frame(param_box)
         area_frame.grid(row=6, column=0, columnspan=6, sticky="w", pady=(8, 0))
         ttk.Label(area_frame, text="校正").pack(side="left")
@@ -386,12 +371,12 @@ class LtsAnalysisApp(tk.Tk):
         ttk.Radiobutton(area_frame, text="複数Stokes合計", value="multi_stokes", variable=self.area_kind).pack(side="left", padx=8)
 
         actions = ttk.Frame(root)
-        actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         ttk.Button(actions, text="解析", command=self.analyze).pack(side="left")
         ttk.Button(actions, text="ログ消去", command=lambda: self.log.delete("1.0", "end")).pack(side="left", padx=8)
 
         self.log = tk.Text(root, height=20, wrap="word")
-        self.log.grid(row=4, column=0, sticky="nsew", pady=(10, 0))
+        self.log.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
 
     def _build_pressure_tab(self, notebook: ttk.Notebook) -> None:
         root = ttk.Frame(notebook, padding=12)
@@ -463,6 +448,7 @@ class LtsAnalysisApp(tk.Tk):
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
         root.rowconfigure(2, weight=1)
+        root.rowconfigure(3, weight=1)
 
         top_box = ttk.LabelFrame(root, text="保存条件", padding=10)
         top_box.grid(row=0, column=0, sticky="ew")
@@ -518,14 +504,53 @@ class LtsAnalysisApp(tk.Tk):
         self.subtract_spectrum_canvas = tk.Canvas(preview_box, bg="white", height=180)
         self.subtract_spectrum_canvas.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
+        fit_box = ttk.LabelFrame(root, text="スペクトルフィッティング", padding=8)
+        fit_box.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        fit_box.columnconfigure(0, weight=1)
+        fit_box.columnconfigure(1, weight=1)
+        fit_box.rowconfigure(1, weight=1)
+
+        fit_controls = ttk.Frame(fit_box)
+        fit_controls.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(fit_controls, text="種別").pack(side="left")
+        ttk.Radiobutton(fit_controls, text="トムソン", value="thomson", variable=self.subtract_fit_kind).pack(side="left", padx=8)
+        ttk.Radiobutton(fit_controls, text="ラマン", value="raman", variable=self.subtract_fit_kind).pack(side="left")
+        ttk.Button(fit_controls, text="フィット実行", command=self.fit_subtracted_spectrum).pack(side="left", padx=12)
+
+        ts_fit_box = ttk.Frame(fit_controls)
+        ts_fit_box.pack(side="left", fill="x", expand=True)
+        self._entry(ts_fit_box, 0, 0, "TS fit最小", self.ts_fit_min, "pixel")
+        self._entry(ts_fit_box, 0, 1, "TS fit最大", self.ts_fit_max, "pixel")
+        self._entry(ts_fit_box, 0, 2, "背景左最小", self.ts_baseline_left_min, "pixel")
+        self._entry(ts_fit_box, 0, 3, "背景左最大", self.ts_baseline_left_max, "pixel")
+        self._entry(ts_fit_box, 0, 4, "背景右最小", self.ts_baseline_right_min, "pixel")
+        self._entry(ts_fit_box, 0, 5, "背景右最大", self.ts_baseline_right_max, "pixel")
+        self._entry(ts_fit_box, 1, 0, "平滑化幅", self.ts_median_width, "pixel")
+        self._entry(ts_fit_box, 1, 1, "fitしきい値", self.ts_threshold_fraction, "-")
+        self._entry(ts_fit_box, 1, 2, "TS y最小", self.y_min, "pixel")
+        self._entry(ts_fit_box, 1, 3, "TS y最大", self.y_max, "pixel")
+        ttk.Checkbutton(ts_fit_box, text="レーザー中心を固定", variable=self.ts_fix_center).grid(
+            row=1,
+            column=4,
+            columnspan=2,
+            sticky="w",
+            padx=4,
+            pady=3,
+        )
+
+        self.subtract_fit_canvas = tk.Canvas(fit_box, bg="white", height=260)
+        self.subtract_fit_canvas.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(8, 0))
+        self.subtract_residual_canvas = tk.Canvas(fit_box, bg="white", height=260)
+        self.subtract_residual_canvas.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(8, 0))
+
         bottom = ttk.Frame(root)
-        bottom.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        bottom.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         ttk.Button(bottom, text="プレビュー更新", command=self.preview_subtraction).pack(side="left")
         ttk.Button(bottom, text="差し引き保存", command=self.analyze_subtraction).pack(side="left")
         ttk.Button(bottom, text="ログ消去", command=lambda: self.subtract_log.delete("1.0", "end")).pack(side="left", padx=8)
 
         self.subtract_log = tk.Text(root, height=10, wrap="word")
-        self.subtract_log.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        self.subtract_log.grid(row=5, column=0, sticky="ew", pady=(10, 0))
 
     def _build_viewer_tab(self, notebook: ttk.Notebook) -> None:
         root = ttk.Frame(notebook, padding=12)
@@ -556,6 +581,9 @@ class LtsAnalysisApp(tk.Tk):
         image_box.rowconfigure(0, weight=1)
         self.viewer_image_canvas = tk.Canvas(image_box, bg="white", height=430)
         self.viewer_image_canvas.grid(row=0, column=0, sticky="nsew")
+        self.viewer_image_canvas.bind("<ButtonPress-1>", self._viewer_drag_start)
+        self.viewer_image_canvas.bind("<B1-Motion>", self._viewer_drag_motion)
+        self.viewer_image_canvas.bind("<ButtonRelease-1>", self._viewer_drag_end)
 
         spectrum_box = ttk.LabelFrame(view_box, text="横方向スペクトル", padding=8)
         spectrum_box.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
@@ -753,6 +781,14 @@ class LtsAnalysisApp(tk.Tk):
         canvas.create_text(max(8, image_x0 - 10), image_y0 + photo.height(), anchor="e", text=f"y={image.shape[0]-1}", fill="black")
         canvas.create_rectangle(0, 0, width, 24, fill="white", outline="")
         canvas.create_text(8, 12, anchor="w", text=title, fill="black")
+        if attr_name == "viewer_image_photo":
+            self.viewer_display = {
+                "image_x0": image_x0,
+                "image_y0": image_y0,
+                "scale_x": photo.width() / image.shape[1],
+                "scale_y": photo.height() / image.shape[0],
+                "shape": image.shape,
+            }
 
     @staticmethod
     def _draw_spectrum_canvas(
@@ -813,6 +849,78 @@ class LtsAnalysisApp(tk.Tk):
         if len(points) >= 4:
             canvas.create_line(*points, fill="#1f5fbf", width=1)
 
+    @staticmethod
+    def _draw_fit_overlay_canvas(
+        canvas: tk.Canvas,
+        x_values: np.ndarray,
+        data_values: np.ndarray,
+        fit_values: np.ndarray,
+        title: str,
+    ) -> None:
+        canvas.delete("all")
+        canvas.update_idletasks()
+        width = max(canvas.winfo_width(), 420)
+        height = max(canvas.winfo_height(), 220)
+        left, right, top, bottom = 62, 22, 30, 48
+        plot_w = width - left - right
+        plot_h = height - top - bottom
+        x_min, x_max = float(np.min(x_values)), float(np.max(x_values))
+        if x_max <= x_min:
+            x_max = x_min + 1.0
+        all_y = np.concatenate([data_values.astype(np.float64), fit_values.astype(np.float64)])
+        y_min = float(np.percentile(all_y, 1))
+        y_max = float(np.percentile(all_y, 99.7))
+        if y_max <= y_min:
+            y_max = float(np.max(all_y) if np.max(all_y) > y_min else y_min + 1)
+        y_pad = (y_max - y_min) * 0.08
+        y_min -= y_pad
+        y_max += y_pad
+
+        def px(x: float) -> float:
+            return left + (x - x_min) / (x_max - x_min) * plot_w
+
+        def py(y: float) -> float:
+            return top + plot_h - (y - y_min) / (y_max - y_min) * plot_h
+
+        canvas.create_text(left, 12, anchor="w", text=title)
+        canvas.create_line(left, top + plot_h, left + plot_w, top + plot_h, fill="black")
+        canvas.create_line(left, top, left, top + plot_h, fill="black")
+        canvas.create_text(left + plot_w / 2, height - 18, text="pixel")
+        canvas.create_text(18, top + plot_h / 2, text="counts", angle=90)
+        canvas.create_text(width - 130, 14, text="blue: data  red: fit", fill="black")
+
+        for i in range(5):
+            x_val = x_min + (x_max - x_min) * i / 4
+            x_pos = px(x_val)
+            canvas.create_line(x_pos, top + plot_h, x_pos, top + plot_h + 4, fill="black")
+            canvas.create_text(x_pos, top + plot_h + 16, text=f"{x_val:.0f}")
+            y_val = y_min + (y_max - y_min) * i / 4
+            y_pos = py(y_val)
+            canvas.create_line(left - 4, y_pos, left, y_pos, fill="black")
+            canvas.create_text(left - 8, y_pos, text=f"{y_val:.2g}", anchor="e")
+
+        def draw_line(values: np.ndarray, color: str, width_px: int) -> None:
+            points = []
+            for x_value, y_value in zip(x_values, values):
+                points.extend([px(float(x_value)), py(float(y_value))])
+            if len(points) >= 4:
+                canvas.create_line(*points, fill=color, width=width_px)
+
+        draw_line(data_values, "#1f5fbf", 1)
+        draw_line(fit_values, "#d34a35", 2)
+
+    def _fit_image_for_subtraction_tab(self) -> tuple[Path, np.ndarray]:
+        if self.subtract_background_files:
+            return self._make_subtracted_images(preview_only=True)[0]
+        if not self.subtract_target_files:
+            raise ValueError("差し引き対象SPEを1つ以上追加してください。")
+        if self.subtract_target_list.curselection():
+            path = self.subtract_target_files[self.subtract_target_list.curselection()[0]]
+        else:
+            path = self.subtract_target_files[0]
+        spe = read_spe(path)
+        return path, spe.image.astype(np.float64)
+
     def _make_subtracted_images(self, preview_only: bool = False) -> list[tuple[Path, np.ndarray]]:
         if not self.subtract_target_files:
             raise ValueError("差し引き対象SPEを1つ以上追加してください。")
@@ -869,12 +977,93 @@ class LtsAnalysisApp(tk.Tk):
             raise ValueError(f"y範囲が不正です: {y0}:{y1} for height {height}")
         return x0, x1, y0, y1
 
+    def _viewer_canvas_to_pixel(self, canvas_x: int, canvas_y: int) -> tuple[int, int]:
+        if not self.viewer_display:
+            raise ValueError("先にSPE画像を表示してください。")
+        shape = self.viewer_display.get("shape")
+        if not isinstance(shape, tuple):
+            raise ValueError("表示中の画像情報を取得できません。")
+        height, width = shape
+        image_x0 = float(self.viewer_display["image_x0"])
+        image_y0 = float(self.viewer_display["image_y0"])
+        scale_x = float(self.viewer_display["scale_x"])
+        scale_y = float(self.viewer_display["scale_y"])
+        x = int(round((canvas_x - image_x0) / scale_x))
+        y = int(round((canvas_y - image_y0) / scale_y))
+        return min(max(x, 0), width), min(max(y, 0), height)
+
+    def _viewer_drag_start(self, event: tk.Event) -> None:
+        try:
+            self.viewer_drag_start = self._viewer_canvas_to_pixel(int(event.x), int(event.y))
+            if self.viewer_drag_rect_id is not None:
+                self.viewer_image_canvas.delete(self.viewer_drag_rect_id)
+                self.viewer_drag_rect_id = None
+        except Exception:
+            self.viewer_drag_start = None
+
+    def _viewer_drag_motion(self, event: tk.Event) -> None:
+        if self.viewer_drag_start is None or not self.viewer_display:
+            return
+        try:
+            x0, y0 = self.viewer_drag_start
+            x1, y1 = self._viewer_canvas_to_pixel(int(event.x), int(event.y))
+            image_x0 = float(self.viewer_display["image_x0"])
+            image_y0 = float(self.viewer_display["image_y0"])
+            scale_x = float(self.viewer_display["scale_x"])
+            scale_y = float(self.viewer_display["scale_y"])
+            rx0 = image_x0 + x0 * scale_x
+            rx1 = image_x0 + x1 * scale_x
+            ry0 = image_y0 + y0 * scale_y
+            ry1 = image_y0 + y1 * scale_y
+            if self.viewer_drag_rect_id is not None:
+                self.viewer_image_canvas.delete(self.viewer_drag_rect_id)
+            self.viewer_drag_rect_id = self.viewer_image_canvas.create_rectangle(
+                rx0,
+                ry0,
+                rx1,
+                ry1,
+                outline="#d34a35",
+                width=2,
+                dash=(4, 2),
+            )
+        except Exception:
+            return
+
+    def _viewer_drag_end(self, event: tk.Event) -> None:
+        if self.viewer_drag_start is None:
+            return
+        try:
+            sx, sy = self.viewer_drag_start
+            ex, ey = self._viewer_canvas_to_pixel(int(event.x), int(event.y))
+            x0, x1 = sorted((sx, ex))
+            y0, y1 = sorted((sy, ey))
+            if x1 <= x0:
+                x1 = x0 + 1
+            if y1 <= y0:
+                y1 = y0 + 1
+            if self.viewer_display and isinstance(self.viewer_display.get("shape"), tuple):
+                height, width = self.viewer_display["shape"]
+                x0 = min(max(x0, 0), width - 1)
+                x1 = min(max(x1, x0 + 1), width)
+                y0 = min(max(y0, 0), height - 1)
+                y1 = min(max(y1, y0 + 1), height)
+            self.viewer_x_min.set(str(x0))
+            self.viewer_x_max.set(str(x1))
+            self.viewer_y_min.set(str(y0))
+            self.viewer_y_max.set(str(y1))
+            self.viewer_drag_start = None
+            self.show_spe_viewer()
+        except Exception as exc:
+            self.viewer_drag_start = None
+            messagebox.showerror("ROI指定エラー", str(exc))
+
     def apply_viewer_roi_to_analysis(self) -> None:
         try:
             path = Path(self.viewer_path.get())
             if not path.exists():
                 raise FileNotFoundError(f"SPEファイルが見つかりません: {path}")
             spe = read_spe(path)
+            self.viewer_current_image = spe.image
             x0, x1, y0, y1 = self._viewer_roi(spe.image.shape)
             self.y_min.set(str(y0))
             self.y_max.set(str(y1))
@@ -1252,6 +1441,96 @@ class LtsAnalysisApp(tk.Tk):
             self.subtract_log.see("end")
         except Exception as exc:
             messagebox.showerror("プレビューエラー", str(exc))
+            self.subtract_log.insert("end", f"エラー: {exc}\n")
+            self.subtract_log.see("end")
+
+    def fit_subtracted_spectrum(self) -> None:
+        try:
+            target_path, image = self._fit_image_for_subtraction_tab()
+            y_min = self._optional_int(self.y_min, "TS y最小")
+            y_max = self._optional_int(self.y_max, "TS y最大")
+            spectrum = spectrum_from_image(image, y_min, y_max)
+            x_all = np.arange(spectrum.size, dtype=np.float64)
+
+            if self.subtract_fit_kind.get() == "thomson":
+                center = self._float(self.fixed_center, "レーザー中心")
+                ts_fit_min = self._int(self.ts_fit_min, "TS fit最小")
+                ts_fit_max = self._int(self.ts_fit_max, "TS fit最大")
+                ts_baseline_left_min = self._int(self.ts_baseline_left_min, "背景左最小")
+                ts_baseline_left_max = self._int(self.ts_baseline_left_max, "背景左最大")
+                ts_baseline_right_min = self._int(self.ts_baseline_right_min, "背景右最小")
+                ts_baseline_right_max = self._int(self.ts_baseline_right_max, "背景右最大")
+                ts_median_width = self._int(self.ts_median_width, "平滑化幅")
+                ts_threshold_fraction = self._float(self.ts_threshold_fraction, "fitしきい値")
+                fit, smooth, _baseline, fit_curve = fit_broad_gaussian(
+                    spectrum,
+                    fit_min=ts_fit_min,
+                    fit_max=ts_fit_max,
+                    baseline_left_min=ts_baseline_left_min,
+                    baseline_left_max=ts_baseline_left_max,
+                    baseline_right_min=ts_baseline_right_min,
+                    baseline_right_max=ts_baseline_right_max,
+                    median_width=ts_median_width,
+                    threshold_fraction=ts_threshold_fraction,
+                    fixed_center=center if self.ts_fix_center.get() else None,
+                )
+                residual = smooth - fit_curve
+                self._draw_fit_overlay_canvas(
+                    self.subtract_fit_canvas,
+                    x_all,
+                    smooth,
+                    fit_curve,
+                    f"トムソンフィット: {target_path.name}",
+                )
+                self._draw_spectrum_canvas(self.subtract_residual_canvas, residual, "残差", x_start=0)
+                self.subtract_log.insert(
+                    "end",
+                    "\n".join(
+                        [
+                            f"トムソンフィット完了: {target_path.name}",
+                            f"center={fit.center_pixel:.3f} pixel",
+                            f"FWHM={fit.fwhm_pixel:.3f} pixel",
+                            f"area={fit.gaussian_area:.6e} count*pixel",
+                            f"R^2={fit.r_squared:.4f}",
+                            "",
+                        ]
+                    ),
+                )
+            else:
+                raman_center = self._optional_float(self.raman_center, "ラマン中心")
+                fit = fit_gaussian_log_parabola(
+                    spectrum,
+                    peak_pixel=None if raman_center is None else int(round(raman_center)),
+                    window=45,
+                    sideband=100,
+                    fixed_center=raman_center,
+                )
+                fit_curve = fit.baseline + fit.amplitude * np.exp(-0.5 * ((x_all - fit.center_pixel) / fit.sigma_pixel) ** 2)
+                residual = spectrum.astype(np.float64) - fit_curve
+                self._draw_fit_overlay_canvas(
+                    self.subtract_fit_canvas,
+                    x_all,
+                    spectrum.astype(np.float64),
+                    fit_curve,
+                    f"ラマンフィット: {target_path.name}",
+                )
+                self._draw_spectrum_canvas(self.subtract_residual_canvas, residual, "残差", x_start=0)
+                self.subtract_log.insert(
+                    "end",
+                    "\n".join(
+                        [
+                            f"ラマンフィット完了: {target_path.name}",
+                            f"center={fit.center_pixel:.3f} pixel",
+                            f"FWHM={fit.fwhm_pixel:.3f} pixel",
+                            f"area={fit.gaussian_area:.6e} count*pixel",
+                            f"R^2={fit.r_squared:.4f}",
+                            "",
+                        ]
+                    ),
+                )
+            self.subtract_log.see("end")
+        except Exception as exc:
+            messagebox.showerror("フィットエラー", str(exc))
             self.subtract_log.insert("end", f"エラー: {exc}\n")
             self.subtract_log.see("end")
 
