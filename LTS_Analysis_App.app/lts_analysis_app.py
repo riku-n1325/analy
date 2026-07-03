@@ -37,6 +37,30 @@ def write_summary(path: Path, values: dict[str, tuple[float, str]]) -> None:
             writer.writerow([name, value, unit])
 
 
+def write_fit_curve(
+    path: Path,
+    raw: np.ndarray,
+    smooth: np.ndarray,
+    baseline: np.ndarray,
+    fit_curve: np.ndarray,
+) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["pixel", "raw_counts", "smoothed_counts", "baseline_counts", "fit_counts", "residual_counts"])
+        for pixel, values in enumerate(zip(raw, smooth, baseline, fit_curve)):
+            raw_value, smooth_value, baseline_value, fit_value = values
+            writer.writerow(
+                [
+                    pixel,
+                    float(raw_value),
+                    float(smooth_value),
+                    float(baseline_value),
+                    float(fit_value),
+                    float(smooth_value - fit_value),
+                ]
+            )
+
+
 class LtsAnalysisApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -65,6 +89,15 @@ class LtsAnalysisApp(tk.Tk):
         self.laser_wavelength_nm = tk.StringVar(value="532")
         self.scattering_angle_deg = tk.StringVar(value="90")
         self.instrument_sigma_pixel = tk.StringVar(value="0")
+        self.ts_fit_min = tk.StringVar(value="360")
+        self.ts_fit_max = tk.StringVar(value="760")
+        self.ts_baseline_left_min = tk.StringVar(value="180")
+        self.ts_baseline_left_max = tk.StringVar(value="330")
+        self.ts_baseline_right_min = tk.StringVar(value="800")
+        self.ts_baseline_right_max = tk.StringVar(value="1000")
+        self.ts_median_width = tk.StringVar(value="21")
+        self.ts_threshold_fraction = tk.StringVar(value="0.15")
+        self.ts_fix_center = tk.BooleanVar(value=True)
 
         self.pressure_pa = tk.StringVar(value="1000")
         self.gas_temperature_k = tk.StringVar(value="300")
@@ -149,6 +182,14 @@ class LtsAnalysisApp(tk.Tk):
             "laser_wavelength_nm": self.laser_wavelength_nm,
             "scattering_angle_deg": self.scattering_angle_deg,
             "instrument_sigma_pixel": self.instrument_sigma_pixel,
+            "ts_fit_min": self.ts_fit_min,
+            "ts_fit_max": self.ts_fit_max,
+            "ts_baseline_left_min": self.ts_baseline_left_min,
+            "ts_baseline_left_max": self.ts_baseline_left_max,
+            "ts_baseline_right_min": self.ts_baseline_right_min,
+            "ts_baseline_right_max": self.ts_baseline_right_max,
+            "ts_median_width": self.ts_median_width,
+            "ts_threshold_fraction": self.ts_threshold_fraction,
             "pressure_pa": self.pressure_pa,
             "gas_temperature_k": self.gas_temperature_k,
             "raman_dsigma": self.raman_dsigma,
@@ -185,6 +226,7 @@ class LtsAnalysisApp(tk.Tk):
         return {
             "subtract_save_csv": self.subtract_save_csv,
             "subtract_save_spe": self.subtract_save_spe,
+            "ts_fix_center": self.ts_fix_center,
         }
 
     def _load_settings(self) -> None:
@@ -239,7 +281,7 @@ class LtsAnalysisApp(tk.Tk):
         root = ttk.Frame(notebook, padding=12)
         notebook.add(root, text="ラマン校正TS解析")
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(3, weight=1)
+        root.rowconfigure(4, weight=1)
 
         file_box = ttk.LabelFrame(root, text="ファイル", padding=10)
         file_box.grid(row=0, column=0, sticky="ew")
@@ -290,6 +332,27 @@ class LtsAnalysisApp(tk.Tk):
         self._entry(param_box, 5, 2, "終了shot数", self.raman_end_shots, "shots")
         self._entry(param_box, 5, 3, "終了Energy", self.raman_end_energy_mj, "mJ")
 
+        ts_fit_box = ttk.LabelFrame(root, text="TSフィット条件", padding=10)
+        ts_fit_box.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        for i in range(6):
+            ts_fit_box.columnconfigure(i, weight=1)
+        self._entry(ts_fit_box, 0, 0, "TS fit最小", self.ts_fit_min, "pixel")
+        self._entry(ts_fit_box, 0, 1, "TS fit最大", self.ts_fit_max, "pixel")
+        self._entry(ts_fit_box, 0, 2, "背景左最小", self.ts_baseline_left_min, "pixel")
+        self._entry(ts_fit_box, 0, 3, "背景左最大", self.ts_baseline_left_max, "pixel")
+        self._entry(ts_fit_box, 0, 4, "背景右最小", self.ts_baseline_right_min, "pixel")
+        self._entry(ts_fit_box, 0, 5, "背景右最大", self.ts_baseline_right_max, "pixel")
+        self._entry(ts_fit_box, 1, 0, "平滑化幅", self.ts_median_width, "pixel")
+        self._entry(ts_fit_box, 1, 1, "fitしきい値", self.ts_threshold_fraction, "-")
+        ttk.Checkbutton(ts_fit_box, text="レーザー中心を固定", variable=self.ts_fix_center).grid(
+            row=1,
+            column=2,
+            columnspan=2,
+            sticky="w",
+            padx=4,
+            pady=3,
+        )
+
         area_frame = ttk.Frame(param_box)
         area_frame.grid(row=6, column=0, columnspan=6, sticky="w", pady=(8, 0))
         ttk.Label(area_frame, text="校正").pack(side="left")
@@ -301,12 +364,12 @@ class LtsAnalysisApp(tk.Tk):
         ttk.Radiobutton(area_frame, text="複数Stokes合計", value="multi_stokes", variable=self.area_kind).pack(side="left", padx=8)
 
         actions = ttk.Frame(root)
-        actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         ttk.Button(actions, text="解析", command=self.analyze).pack(side="left")
         ttk.Button(actions, text="ログ消去", command=lambda: self.log.delete("1.0", "end")).pack(side="left", padx=8)
 
         self.log = tk.Text(root, height=20, wrap="word")
-        self.log.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        self.log.grid(row=4, column=0, sticky="nsew", pady=(10, 0))
 
     def _build_pressure_tab(self, notebook: ttk.Notebook) -> None:
         root = ttk.Frame(notebook, padding=12)
@@ -841,18 +904,28 @@ class LtsAnalysisApp(tk.Tk):
             raman_energy_mj = self._float(self.raman_energy_mj, "ラマンEnergy")
             thomson_energy_mj = self._float(self.thomson_energy_mj, "TS Energy")
             correction = self._float(self.correction_factor, "補正係数")
+            ts_fit_min = self._int(self.ts_fit_min, "TS fit最小")
+            ts_fit_max = self._int(self.ts_fit_max, "TS fit最大")
+            ts_baseline_left_min = self._int(self.ts_baseline_left_min, "背景左最小")
+            ts_baseline_left_max = self._int(self.ts_baseline_left_max, "背景左最大")
+            ts_baseline_right_min = self._int(self.ts_baseline_right_min, "背景右最小")
+            ts_baseline_right_max = self._int(self.ts_baseline_right_max, "背景右最大")
+            ts_median_width = self._int(self.ts_median_width, "平滑化幅")
+            ts_threshold_fraction = self._float(self.ts_threshold_fraction, "fitしきい値")
 
             ts = read_spe(thomson_file)
             ts_spectrum = spectrum_from_image(ts.image, y_min, y_max)
-            ts_fit, _, _, _ = fit_broad_gaussian(
+            ts_fit, ts_smooth, ts_baseline, ts_fit_curve = fit_broad_gaussian(
                 ts_spectrum,
-                fit_min=360,
-                fit_max=760,
-                baseline_left_min=180,
-                baseline_left_max=330,
-                baseline_right_min=800,
-                baseline_right_max=1000,
-                fixed_center=center,
+                fit_min=ts_fit_min,
+                fit_max=ts_fit_max,
+                baseline_left_min=ts_baseline_left_min,
+                baseline_left_max=ts_baseline_left_max,
+                baseline_right_min=ts_baseline_right_min,
+                baseline_right_max=ts_baseline_right_max,
+                median_width=ts_median_width,
+                threshold_fraction=ts_threshold_fraction,
+                fixed_center=center if self.ts_fix_center.get() else None,
             )
 
             if self.area_kind.get() == "gaussian":
@@ -963,6 +1036,8 @@ class LtsAnalysisApp(tk.Tk):
             alpha = scattering_parameter_alpha(ne, te, laser_nm, angle)
 
             result_path = out_dir / "latest_lts_result.csv"
+            ts_curve_path = out_dir / "latest_thomson_fit_curve.csv"
+            write_fit_curve(ts_curve_path, ts_spectrum, ts_smooth, ts_baseline, ts_fit_curve)
             write_summary(
                 result_path,
                 {
@@ -971,6 +1046,15 @@ class LtsAnalysisApp(tk.Tk):
                     "thomson_fwhm": (ts_fit.fwhm_pixel, "pixel"),
                     "thomson_area": (ts_area, "count_pixel"),
                     "thomson_r_squared": (ts_fit.r_squared, ""),
+                    "thomson_fit_min": (ts_fit_min, "pixel"),
+                    "thomson_fit_max": (ts_fit_max, "pixel"),
+                    "thomson_baseline_left_min": (ts_baseline_left_min, "pixel"),
+                    "thomson_baseline_left_max": (ts_baseline_left_max, "pixel"),
+                    "thomson_baseline_right_min": (ts_baseline_right_min, "pixel"),
+                    "thomson_baseline_right_max": (ts_baseline_right_max, "pixel"),
+                    "thomson_median_width": (ts_median_width, "pixel"),
+                    "thomson_threshold_fraction": (ts_threshold_fraction, ""),
+                    "thomson_fixed_center": (int(self.ts_fix_center.get()), "0_or_1"),
                     "raman_center": (raman_fit.center_pixel, "pixel"),
                     "raman_sigma": (raman_fit.sigma_pixel, "pixel"),
                     "raman_area": (raman_area, "count_pixel"),
@@ -1011,6 +1095,7 @@ class LtsAnalysisApp(tk.Tk):
                         f"Te: {te:.6e} eV",
                         f"alpha: {alpha:.4f}",
                         f"保存先: {result_path}",
+                        f"TSフィット曲線・残差CSV: {ts_curve_path}",
                         "",
                     ]
                 )
