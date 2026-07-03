@@ -4,6 +4,7 @@ import csv
 import json
 import sys
 import tkinter as tk
+import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -1130,10 +1131,14 @@ class LtsAnalysisApp(tk.Tk):
         return value
 
     def analyze(self) -> None:
+        stage = "解析開始"
+        debug_values: dict[str, float | int | str] = {}
         try:
+            stage = "出力先フォルダの準備"
             out_dir = Path(self.out_dir.get())
             out_dir.mkdir(parents=True, exist_ok=True)
 
+            stage = "入力SPEファイルの確認"
             thomson_file = Path(self.thomson_path.get())
             raman_file = Path(self.raman_path.get())
             raman_start_file = Path(self.raman_start_path.get())
@@ -1148,6 +1153,7 @@ class LtsAnalysisApp(tk.Tk):
                 if not raman_end_file.exists():
                     raise FileNotFoundError(f"終了ラマンSPEが見つかりません: {raman_end_file}")
 
+            stage = "入力欄の数値読み取り"
             y_min = self._int(self.y_min, "TS y最小")
             y_max = self._int(self.y_max, "TS y最大")
             center = self._float(self.fixed_center, "レーザー中心")
@@ -1179,9 +1185,41 @@ class LtsAnalysisApp(tk.Tk):
             ts_baseline_right_max = self._int(self.ts_baseline_right_max, "背景右最大")
             ts_median_width = self._int(self.ts_median_width, "平滑化幅")
             ts_threshold_fraction = self._float(self.ts_threshold_fraction, "fitしきい値")
+            debug_values.update(
+                {
+                    "mode": self.calibration_mode.get(),
+                    "area_kind": self.area_kind.get(),
+                    "y_min": y_min,
+                    "y_max": y_max,
+                    "laser_center_pixel": center,
+                    "raman_center_pixel": "" if raman_center is None else raman_center,
+                    "nm_per_pixel": nm_per_pixel,
+                    "laser_wavelength_nm": laser_nm,
+                    "scattering_angle_deg": angle,
+                    "instrument_sigma_pixel": inst_sigma,
+                    "pressure_pa": pressure,
+                    "gas_temperature_k": gas_temp,
+                    "raman_dsigma_m2": raman_dsigma,
+                    "thomson_dsigma_m2": thomson_dsigma,
+                    "raman_shots": raman_shots,
+                    "thomson_shots": thomson_shots,
+                    "raman_energy_mj": raman_energy_mj,
+                    "thomson_energy_mj": thomson_energy_mj,
+                    "correction_factor": correction,
+                    "ts_fit_min": ts_fit_min,
+                    "ts_fit_max": ts_fit_max,
+                    "ts_threshold_fraction": ts_threshold_fraction,
+                }
+            )
 
+            stage = "トムソンSPE読み込み"
             ts = read_spe(thomson_file)
+            stage = "トムソンROI積算スペクトル作成"
             ts_spectrum = spectrum_from_image(ts.image, y_min, y_max)
+            debug_values["ts_spectrum_min"] = float(np.min(ts_spectrum))
+            debug_values["ts_spectrum_max"] = float(np.max(ts_spectrum))
+            debug_values["ts_spectrum_sum"] = float(np.sum(ts_spectrum))
+            stage = "トムソンスペクトルのガウスフィッティング"
             ts_fit, ts_smooth, ts_baseline, ts_fit_curve = fit_broad_gaussian(
                 ts_spectrum,
                 fit_min=ts_fit_min,
@@ -1202,16 +1240,29 @@ class LtsAnalysisApp(tk.Tk):
             else:
                 ts_area = ts_fit.direct_area
             self._positive(float(ts_area), "トムソン散乱スペクトル面積")
+            debug_values.update(
+                {
+                    "ts_center_pixel": float(ts_fit.center_pixel),
+                    "ts_sigma_pixel": float(ts_fit.sigma_pixel),
+                    "ts_fwhm_pixel": float(ts_fit.fwhm_pixel),
+                    "ts_area_count_pixel": float(ts_area),
+                    "ts_r_squared": float(ts_fit.r_squared),
+                }
+            )
 
+            stage = "TS shot数とEnergyの検査"
             self._positive(thomson_shots, "TS shot数")
             self._positive(thomson_energy_mj, "TS Energy")
+            stage = "気体密度 n_gas の計算"
             gas_density = gas_density_from_pressure(pressure, gas_temp)
+            debug_values["gas_density_m3"] = gas_density
             drift_note = "single"
             k_start = float("nan")
             k_end = float("nan")
             drift_rate = float("nan")
 
             if self.calibration_mode.get() == "drift":
+                stage = "時間補間モードの時刻入力読み取り"
                 t_start = self._float(self.raman_start_time_h, "開始時刻")
                 t_end = self._float(self.raman_end_time_h, "終了時刻")
                 t_ts = self._float(self.thomson_time_h, "TS時刻")
@@ -1224,7 +1275,21 @@ class LtsAnalysisApp(tk.Tk):
                 end_shots = self._positive(self._float(self.raman_end_shots, "終了shot数"), "終了shot数")
                 start_energy = self._positive(self._float(self.raman_start_energy_mj, "開始Energy"), "開始Energy")
                 end_energy = self._positive(self._float(self.raman_end_energy_mj, "終了Energy"), "終了Energy")
+                debug_values.update(
+                    {
+                        "t_start_h": t_start,
+                        "t_end_h": t_end,
+                        "t_ts_h": t_ts,
+                        "start_pressure_pa": start_pressure,
+                        "end_pressure_pa": end_pressure,
+                        "start_shots": start_shots,
+                        "end_shots": end_shots,
+                        "start_energy_mj": start_energy,
+                        "end_energy_mj": end_energy,
+                    }
+                )
 
+                stage = "開始ラマンスペクトルのフィッティング"
                 raman_start_info = self._fit_raman_signal(
                     raman_start_file,
                     raman_center,
@@ -1233,6 +1298,7 @@ class LtsAnalysisApp(tk.Tk):
                     raman_max_peaks,
                     raman_peak_threshold,
                 )
+                stage = "終了ラマンスペクトルのフィッティング"
                 raman_end_info = self._fit_raman_signal(
                     raman_end_file,
                     raman_center,
@@ -1241,20 +1307,28 @@ class LtsAnalysisApp(tk.Tk):
                     raman_max_peaks,
                     raman_peak_threshold,
                 )
+                stage = "開始・終了ラマン測定時の気体密度計算"
                 start_gas_density = gas_density_from_pressure(start_pressure, gas_temp)
                 end_gas_density = gas_density_from_pressure(end_pressure, gas_temp)
+                debug_values["start_gas_density_m3"] = start_gas_density
+                debug_values["end_gas_density_m3"] = end_gas_density
+                debug_values["raman_start_area_count_pixel"] = float(raman_start_info["area"])
+                debug_values["raman_end_area_count_pixel"] = float(raman_end_info["area"])
+                stage = "開始ラマンから校正係数 k_start を計算"
                 k_start = throughput_from_raman(
                     raman_stokes_counts=float(raman_start_info["area"]) / start_energy,
                     gas_density_m3=start_gas_density,
                     raman_stokes_cross_section_m2=raman_dsigma,
                     raman_shots=start_shots,
                 )
+                stage = "終了ラマンから校正係数 k_end を計算"
                 k_end = throughput_from_raman(
                     raman_stokes_counts=float(raman_end_info["area"]) / end_energy,
                     gas_density_m3=end_gas_density,
                     raman_stokes_cross_section_m2=raman_dsigma,
                     raman_shots=end_shots,
                 )
+                stage = "校正係数 k の時間補間"
                 fraction = (t_ts - t_start) / (t_end - t_start)
                 throughput_k = k_start + (k_end - k_start) * fraction
                 drift_rate = (k_end - k_start) / (t_end - t_start)
@@ -1266,9 +1340,14 @@ class LtsAnalysisApp(tk.Tk):
                 raman_peak_count = int(raman_start_info["peak_count"])
                 raman_peak_pixels = str(raman_start_info["peak_pixels"])
                 drift_note = f"drift_interpolation: t={t_ts:g} h, fraction={fraction:.4f}"
+                debug_values["throughput_k_start_m_per_mj"] = k_start
+                debug_values["throughput_k_end_m_per_mj"] = k_end
+                debug_values["throughput_k_m_per_mj"] = throughput_k
             else:
+                stage = "単一ラマンモードのshot数とEnergyの検査"
                 self._positive(raman_shots, "ラマンshot数")
                 self._positive(raman_energy_mj, "ラマンEnergy")
+                stage = "ラマンスペクトルのフィッティング"
                 raman_info = self._fit_raman_signal(
                     raman_file,
                     raman_center,
@@ -1283,13 +1362,25 @@ class LtsAnalysisApp(tk.Tk):
                 raman_r_squared = float(raman_info["r_squared"])
                 raman_peak_count = int(raman_info["peak_count"])
                 raman_peak_pixels = str(raman_info["peak_pixels"])
+                debug_values.update(
+                    {
+                        "raman_area_count_pixel": raman_area,
+                        "raman_center_pixel_fit": float(raman_fit.center_pixel),
+                        "raman_sigma_pixel": float(raman_fit.sigma_pixel),
+                        "raman_r_squared": raman_r_squared,
+                    }
+                )
+                stage = "ラマン散乱から校正係数 k を計算"
                 throughput_k = throughput_from_raman(
                     raman_stokes_counts=raman_area / raman_energy_mj,
                     gas_density_m3=gas_density,
                     raman_stokes_cross_section_m2=raman_dsigma,
                     raman_shots=raman_shots,
                 )
+                debug_values["throughput_k_m_per_mj"] = throughput_k
 
+            stage = "トムソン散乱強度から電子密度 ne を計算"
+            debug_values["thomson_counts_per_mj"] = float(ts_area) / thomson_energy_mj
             ne = electron_density_from_thomson_counts(
                 thomson_counts=ts_area / thomson_energy_mj,
                 throughput_k_m=throughput_k,
@@ -1297,9 +1388,15 @@ class LtsAnalysisApp(tk.Tk):
                 thomson_shots=thomson_shots,
                 correction_factor=correction,
             )
+            debug_values["electron_density_m3"] = ne
+            stage = "トムソンスペクトル幅から電子温度 Te を計算"
             te = electron_temperature_from_width(ts_fit.sigma_pixel, nm_per_pixel, laser_nm, angle, inst_sigma)
+            debug_values["electron_temperature_ev"] = te
+            stage = "散乱パラメータ alpha を計算"
             alpha = scattering_parameter_alpha(ne, te, laser_nm, angle)
+            debug_values["scattering_alpha"] = alpha
 
+            stage = "解析結果CSVの保存"
             result_path = out_dir / "latest_lts_result.csv"
             ts_curve_path = out_dir / "latest_thomson_fit_curve.csv"
             write_fit_curve(ts_curve_path, ts_spectrum, ts_smooth, ts_baseline, ts_fit_curve)
@@ -1367,7 +1464,18 @@ class LtsAnalysisApp(tk.Tk):
             )
         except Exception as exc:
             messagebox.showerror("解析エラー", str(exc))
-            self._log(f"エラー: {exc}\n")
+            trace_tail = traceback.format_exc().strip().splitlines()[-8:]
+            debug_lines = [
+                f"エラー: {exc}",
+                f"停止ステップ: {stage}",
+                "直前の入力値・中間値:",
+            ]
+            for key, value in debug_values.items():
+                debug_lines.append(f"  {key}: {value}")
+            debug_lines.append("内部トレース末尾:")
+            debug_lines.extend(f"  {line}" for line in trace_tail)
+            debug_lines.append("")
+            self._log("\n".join(debug_lines))
 
     def analyze_subtraction(self) -> None:
         try:
