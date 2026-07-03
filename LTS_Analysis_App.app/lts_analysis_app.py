@@ -79,8 +79,6 @@ class LtsAnalysisApp(tk.Tk):
         self.y_max = tk.StringVar(value="970")
         self.fixed_center = tk.StringVar(value="536.8749")
         self.raman_center = tk.StringVar(value="650")
-        self.raman_mask_min = tk.StringVar(value="")
-        self.raman_mask_max = tk.StringVar(value="")
         self.raman_stokes_min = tk.StringVar(value="")
         self.raman_stokes_max = tk.StringVar(value="")
         self.raman_max_peaks = tk.StringVar(value="12")
@@ -122,8 +120,6 @@ class LtsAnalysisApp(tk.Tk):
 
         self.pressure_folder = tk.StringVar(value="")
         self.pressure_peak_center = tk.StringVar(value="")
-        self.pressure_mask_min = tk.StringVar(value="")
-        self.pressure_mask_max = tk.StringVar(value="")
         self.pressure_signal_kind = tk.StringVar(value="amplitude")
         self.pressure_rows: list[tuple[Path, tk.StringVar]] = []
 
@@ -136,6 +132,8 @@ class LtsAnalysisApp(tk.Tk):
         self.subtract_image_photo: ImageTk.PhotoImage | None = None
 
         self.viewer_path = tk.StringVar()
+        self.viewer_x_min = tk.StringVar(value="")
+        self.viewer_x_max = tk.StringVar(value="")
         self.viewer_y_min = tk.StringVar(value="")
         self.viewer_y_max = tk.StringVar(value="")
         self.viewer_image_photo: ImageTk.PhotoImage | None = None
@@ -172,8 +170,6 @@ class LtsAnalysisApp(tk.Tk):
             "y_max": self.y_max,
             "fixed_center": self.fixed_center,
             "raman_center": self.raman_center,
-            "raman_mask_min": self.raman_mask_min,
-            "raman_mask_max": self.raman_mask_max,
             "raman_stokes_min": self.raman_stokes_min,
             "raman_stokes_max": self.raman_stokes_max,
             "raman_max_peaks": self.raman_max_peaks,
@@ -212,12 +208,12 @@ class LtsAnalysisApp(tk.Tk):
             "area_kind": self.area_kind,
             "pressure_folder": self.pressure_folder,
             "pressure_peak_center": self.pressure_peak_center,
-            "pressure_mask_min": self.pressure_mask_min,
-            "pressure_mask_max": self.pressure_mask_max,
             "pressure_signal_kind": self.pressure_signal_kind,
             "subtract_out_dir": self.subtract_out_dir,
             "subtract_scale": self.subtract_scale,
             "viewer_path": self.viewer_path,
+            "viewer_x_min": self.viewer_x_min,
+            "viewer_x_max": self.viewer_x_max,
             "viewer_y_min": self.viewer_y_min,
             "viewer_y_max": self.viewer_y_max,
         }
@@ -301,8 +297,6 @@ class LtsAnalysisApp(tk.Tk):
         self._entry(param_box, 0, 1, "TS y最大", self.y_max, "pixel")
         self._entry(param_box, 0, 2, "レーザー中心", self.fixed_center, "pixel")
         self._entry(param_box, 0, 3, "ラマン中心", self.raman_center, "pixel")
-        self._entry(param_box, 0, 4, "ストップ最小", self.raman_mask_min, "pixel")
-        self._entry(param_box, 0, 5, "ストップ最大", self.raman_mask_max, "pixel")
 
         self._entry(param_box, 1, 0, "波長校正", self.nm_per_pixel, "nm/pixel")
         self._entry(param_box, 1, 1, "レーザー波長", self.laser_wavelength_nm, "nm")
@@ -390,11 +384,9 @@ class LtsAnalysisApp(tk.Tk):
         for i in range(5):
             option_box.columnconfigure(i, weight=1)
         self._entry(option_box, 0, 0, "ラマン中心", self.pressure_peak_center, "pixel")
-        self._entry(option_box, 0, 1, "ストップ最小", self.pressure_mask_min, "pixel")
-        self._entry(option_box, 0, 2, "ストップ最大", self.pressure_mask_max, "pixel")
 
         signal_frame = ttk.Frame(option_box)
-        signal_frame.grid(row=0, column=3, columnspan=2, sticky="w", padx=4)
+        signal_frame.grid(row=0, column=1, columnspan=2, sticky="w", padx=4)
         ttk.Label(signal_frame, text="縦軸").pack(anchor="w")
         ttk.Radiobutton(signal_frame, text="ピーク高さ", value="amplitude", variable=self.pressure_signal_kind).pack(side="left")
         ttk.Radiobutton(signal_frame, text="ガウス面積", value="area", variable=self.pressure_signal_kind).pack(side="left", padx=8)
@@ -517,9 +509,12 @@ class LtsAnalysisApp(tk.Tk):
         file_box.grid(row=0, column=0, sticky="ew")
         file_box.columnconfigure(1, weight=1)
         self._file_row(file_box, 0, "SPEファイル", self.viewer_path)
-        self._entry(file_box, 0, 3, "y最小", self.viewer_y_min, "pixel")
-        self._entry(file_box, 0, 4, "y最大", self.viewer_y_max, "pixel")
+        self._entry(file_box, 0, 3, "x最小", self.viewer_x_min, "pixel")
+        self._entry(file_box, 0, 4, "x最大", self.viewer_x_max, "pixel")
+        self._entry(file_box, 1, 3, "y最小", self.viewer_y_min, "pixel")
+        self._entry(file_box, 1, 4, "y最大", self.viewer_y_max, "pixel")
         ttk.Button(file_box, text="表示", command=self.show_spe_viewer).grid(row=0, column=5, padx=8)
+        ttk.Button(file_box, text="解析タブへ反映", command=self.apply_viewer_roi_to_analysis).grid(row=1, column=5, padx=8)
 
         view_box = ttk.Frame(root)
         view_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
@@ -696,19 +691,49 @@ class LtsAnalysisApp(tk.Tk):
         pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
         return ImageTk.PhotoImage(pil_image)
 
-    def _draw_image_canvas(self, canvas: tk.Canvas, image: np.ndarray, title: str, attr_name: str) -> None:
+    def _draw_image_canvas(
+        self,
+        canvas: tk.Canvas,
+        image: np.ndarray,
+        title: str,
+        attr_name: str,
+        roi: tuple[int, int, int, int] | None = None,
+    ) -> None:
         canvas.delete("all")
         photo = self._scaled_photo(image, canvas)
         setattr(self, attr_name, photo)
         canvas.update_idletasks()
         width = max(canvas.winfo_width(), 320)
         height = max(canvas.winfo_height(), 180)
+        image_x0 = (width - photo.width()) / 2
+        image_y0 = (height - photo.height()) / 2
         canvas.create_image(width / 2, height / 2, image=photo, anchor="center")
+        if roi is not None:
+            x0, x1, y0, y1 = roi
+            img_h, img_w = image.shape
+            scale_x = photo.width() / img_w
+            scale_y = photo.height() / img_h
+            rx0 = image_x0 + x0 * scale_x
+            rx1 = image_x0 + x1 * scale_x
+            ry0 = image_y0 + y0 * scale_y
+            ry1 = image_y0 + y1 * scale_y
+            canvas.create_rectangle(rx0, ry0, rx1, ry1, outline="#d34a35", width=2)
+            canvas.create_text(rx0 + 4, ry0 + 10, anchor="w", text=f"x={x0}:{x1}, y={y0}:{y1}", fill="#d34a35")
+        canvas.create_text(image_x0, min(height - 8, image_y0 + photo.height() + 12), anchor="w", text="x pixel", fill="black")
+        canvas.create_text(max(8, image_x0 - 10), image_y0, anchor="e", text="y=0", fill="black")
+        canvas.create_text(image_x0 + photo.width(), min(height - 8, image_y0 + photo.height() + 12), anchor="e", text=f"x={image.shape[1]-1}", fill="black")
+        canvas.create_text(max(8, image_x0 - 10), image_y0 + photo.height(), anchor="e", text=f"y={image.shape[0]-1}", fill="black")
         canvas.create_rectangle(0, 0, width, 24, fill="white", outline="")
         canvas.create_text(8, 12, anchor="w", text=title, fill="black")
 
     @staticmethod
-    def _draw_spectrum_canvas(canvas: tk.Canvas, spectrum: np.ndarray, title: str, y_label: str = "counts") -> None:
+    def _draw_spectrum_canvas(
+        canvas: tk.Canvas,
+        spectrum: np.ndarray,
+        title: str,
+        y_label: str = "counts",
+        x_start: int = 0,
+    ) -> None:
         canvas.delete("all")
         canvas.update_idletasks()
         width = max(canvas.winfo_width(), 420)
@@ -717,7 +742,7 @@ class LtsAnalysisApp(tk.Tk):
         plot_w = width - left - right
         plot_h = height - top - bottom
         arr = spectrum.astype(np.float64)
-        x_min, x_max = 0.0, float(max(arr.size - 1, 1))
+        x_min, x_max = float(x_start), float(x_start + max(arr.size - 1, 1))
         y_min = float(np.percentile(arr, 1))
         y_max = float(np.percentile(arr, 99.7))
         if y_max <= y_min:
@@ -751,8 +776,9 @@ class LtsAnalysisApp(tk.Tk):
         if arr.size < 2:
             return
         step = max(1, int(arr.size / plot_w))
-        xs = np.arange(0, arr.size, step)
-        ys = arr[xs]
+        indices = np.arange(0, arr.size, step)
+        xs = indices + x_start
+        ys = arr[indices]
         points = []
         for x_value, y_value in zip(xs, ys):
             points.extend([px(float(x_value)), py(float(y_value))])
@@ -799,12 +825,48 @@ class LtsAnalysisApp(tk.Tk):
             results.append((target_path, target_image - scale * background_mean))
         return results
 
+    def _viewer_roi(self, image_shape: tuple[int, int]) -> tuple[int, int, int, int]:
+        height, width = image_shape
+        x_min = self._optional_int(self.viewer_x_min, "x最小")
+        x_max = self._optional_int(self.viewer_x_max, "x最大")
+        y_min = self._optional_int(self.viewer_y_min, "y最小")
+        y_max = self._optional_int(self.viewer_y_max, "y最大")
+        x0 = 0 if x_min is None else x_min
+        x1 = width if x_max is None else x_max
+        y0 = 0 if y_min is None else y_min
+        y1 = height if y_max is None else y_max
+        if not (0 <= x0 < x1 <= width):
+            raise ValueError(f"x範囲が不正です: {x0}:{x1} for width {width}")
+        if not (0 <= y0 < y1 <= height):
+            raise ValueError(f"y範囲が不正です: {y0}:{y1} for height {height}")
+        return x0, x1, y0, y1
+
+    def apply_viewer_roi_to_analysis(self) -> None:
+        try:
+            path = Path(self.viewer_path.get())
+            if not path.exists():
+                raise FileNotFoundError(f"SPEファイルが見つかりません: {path}")
+            spe = read_spe(path)
+            x0, x1, y0, y1 = self._viewer_roi(spe.image.shape)
+            self.y_min.set(str(y0))
+            self.y_max.set(str(y1))
+            self.ts_fit_min.set(str(x0))
+            self.ts_fit_max.set(str(x1))
+            self.raman_stokes_min.set(str(x0))
+            self.raman_stokes_max.set(str(x1))
+            self.viewer_log.insert(
+                "end",
+                f"解析タブへ反映しました: TS y={y0}:{y1}, TS fit x={x0}:{x1}, Stokes探索 x={x0}:{x1}\n",
+            )
+            self.viewer_log.see("end")
+        except Exception as exc:
+            messagebox.showerror("反映エラー", str(exc))
+            self.viewer_log.insert("end", f"エラー: {exc}\n")
+
     def _fit_raman_signal(
         self,
         raman_file: Path,
         raman_center: float | None,
-        raman_mask_min: int | None,
-        raman_mask_max: int | None,
         raman_stokes_min: int | None,
         raman_stokes_max: int | None,
         raman_max_peaks: int,
@@ -834,16 +896,12 @@ class LtsAnalysisApp(tk.Tk):
                 peak_pixel=None if raman_center is None else int(round(raman_center)),
                 window=45,
                 sideband=100,
-                mask_min=raman_mask_min,
-                mask_max=raman_mask_max,
                 fixed_center=raman_center,
             )
             if self.area_kind.get() == "gaussian":
                 area = raman_fit.gaussian_area
             else:
                 area = raman_fit.direct_area
-                if raman_mask_min is not None and raman_mask_max is not None:
-                    self._log("警告: ラマンピークがストップで欠けている場合、直接積分面積は推奨しません。")
             r_squared = raman_fit.r_squared
             peak_count = 1
             peak_pixels = f"{raman_fit.center_pixel:.2f}"
@@ -885,8 +943,6 @@ class LtsAnalysisApp(tk.Tk):
             y_max = self._int(self.y_max, "TS y最大")
             center = self._float(self.fixed_center, "レーザー中心")
             raman_center = self._optional_float(self.raman_center, "ラマン中心")
-            raman_mask_min = self._optional_int(self.raman_mask_min, "ストップ最小")
-            raman_mask_max = self._optional_int(self.raman_mask_max, "ストップ最大")
             raman_stokes_min = self._optional_int(self.raman_stokes_min, "Stokes探索最小")
             raman_stokes_max = self._optional_int(self.raman_stokes_max, "Stokes探索最大")
             raman_max_peaks = self._int(self.raman_max_peaks, "最大ピーク数")
@@ -960,8 +1016,6 @@ class LtsAnalysisApp(tk.Tk):
                 raman_start_info = self._fit_raman_signal(
                     raman_start_file,
                     raman_center,
-                    raman_mask_min,
-                    raman_mask_max,
                     raman_stokes_min,
                     raman_stokes_max,
                     raman_max_peaks,
@@ -970,8 +1024,6 @@ class LtsAnalysisApp(tk.Tk):
                 raman_end_info = self._fit_raman_signal(
                     raman_end_file,
                     raman_center,
-                    raman_mask_min,
-                    raman_mask_max,
                     raman_stokes_min,
                     raman_stokes_max,
                     raman_max_peaks,
@@ -1006,8 +1058,6 @@ class LtsAnalysisApp(tk.Tk):
                 raman_info = self._fit_raman_signal(
                     raman_file,
                     raman_center,
-                    raman_mask_min,
-                    raman_mask_max,
                     raman_stokes_min,
                     raman_stokes_max,
                     raman_max_peaks,
@@ -1183,17 +1233,15 @@ class LtsAnalysisApp(tk.Tk):
             if not path.exists():
                 raise FileNotFoundError(f"SPEファイルが見つかりません: {path}")
             spe = read_spe(path)
-            y_min = self._optional_int(self.viewer_y_min, "y最小")
-            y_max = self._optional_int(self.viewer_y_max, "y最大")
-            spectrum = spectrum_from_image(spe.image, y_min, y_max)
-            y0 = 0 if y_min is None else y_min
-            y1 = spe.image.shape[0] if y_max is None else y_max
+            x0, x1, y0, y1 = self._viewer_roi(spe.image.shape)
+            spectrum = spe.image[y0:y1, x0:x1].sum(axis=0)
 
-            self._draw_image_canvas(self.viewer_image_canvas, spe.image, path.name, "viewer_image_photo")
+            self._draw_image_canvas(self.viewer_image_canvas, spe.image, path.name, "viewer_image_photo", roi=(x0, x1, y0, y1))
             self._draw_spectrum_canvas(
                 self.viewer_spectrum_canvas,
                 spectrum,
-                f"積算スペクトル y={y0}:{y1}",
+                f"ROI積算スペクトル x={x0}:{x1}, y={y0}:{y1}",
+                x_start=x0,
             )
             self.viewer_log.delete("1.0", "end")
             self.viewer_log.insert(
@@ -1205,7 +1253,7 @@ class LtsAnalysisApp(tk.Tk):
                         f"画像サイズ: {spe.xdim} x {spe.ydim} pixel",
                         f"frames: {spe.frames}",
                         f"dtype_code: {spe.dtype_code}",
-                        f"積算範囲: y={y0}:{y1} pixel",
+                        f"表示範囲: x={x0}:{x1} pixel, y={y0}:{y1} pixel",
                     ]
                 )
                 + "\n",
@@ -1249,8 +1297,6 @@ class LtsAnalysisApp(tk.Tk):
                 raise ValueError("先にSPEフォルダを読み込んでください。")
 
             center = self._optional_float(self.pressure_peak_center, "ラマン中心")
-            mask_min = self._optional_int(self.pressure_mask_min, "ストップ最小")
-            mask_max = self._optional_int(self.pressure_mask_max, "ストップ最大")
             results = []
 
             for path, pressure_var in self.pressure_rows:
@@ -1265,8 +1311,6 @@ class LtsAnalysisApp(tk.Tk):
                     peak_pixel=None if center is None else int(round(center)),
                     window=45,
                     sideband=100,
-                    mask_min=mask_min,
-                    mask_max=mask_max,
                     fixed_center=center,
                 )
                 if self.pressure_signal_kind.get() == "area":
