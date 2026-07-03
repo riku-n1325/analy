@@ -274,8 +274,36 @@ class LtsAnalysisApp(tk.Tk):
         self.destroy()
 
     def _build_calibration_tab(self, notebook: ttk.Notebook) -> None:
-        root = ttk.Frame(notebook, padding=12)
-        notebook.add(root, text="ラマン校正TS解析")
+        tab = ttk.Frame(notebook)
+        notebook.add(tab, text="ラマン校正TS解析")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(tab, highlightthickness=0)
+        y_scroll = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        x_scroll = ttk.Scrollbar(tab, orient="horizontal", command=canvas.xview)
+        canvas.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+
+        root = ttk.Frame(canvas, padding=12)
+        window_id = canvas.create_window((0, 0), window=root, anchor="nw")
+
+        def update_scrollregion(_event: tk.Event | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def update_inner_width(event: tk.Event) -> None:
+            canvas.itemconfigure(window_id, width=max(event.width, root.winfo_reqwidth()))
+            update_scrollregion()
+
+        def on_mousewheel(event: tk.Event) -> None:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        root.bind("<Configure>", update_scrollregion)
+        canvas.bind("<Configure>", update_inner_width)
+        canvas.bind("<Enter>", lambda _event: canvas.bind_all("<MouseWheel>", on_mousewheel))
+        canvas.bind("<Leave>", lambda _event: canvas.unbind_all("<MouseWheel>"))
         root.columnconfigure(0, weight=1)
         root.rowconfigure(4, weight=1)
 
