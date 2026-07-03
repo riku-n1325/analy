@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
+from PIL import Image, ImageTk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from calibrate_density import (  # noqa: E402
@@ -97,6 +98,12 @@ class LtsAnalysisApp(tk.Tk):
         self.subtract_save_spe = tk.BooleanVar(value=True)
         self.subtract_target_files: list[Path] = []
         self.subtract_background_files: list[Path] = []
+        self.subtract_image_photo: ImageTk.PhotoImage | None = None
+
+        self.viewer_path = tk.StringVar()
+        self.viewer_y_min = tk.StringVar(value="")
+        self.viewer_y_max = tk.StringVar(value="")
+        self.viewer_image_photo: ImageTk.PhotoImage | None = None
 
         self._build_ui()
 
@@ -106,6 +113,7 @@ class LtsAnalysisApp(tk.Tk):
         self._build_calibration_tab(notebook)
         self._build_pressure_tab(notebook)
         self._build_subtraction_tab(notebook)
+        self._build_viewer_tab(notebook)
 
     def _build_calibration_tab(self, notebook: ttk.Notebook) -> None:
         root = ttk.Frame(notebook, padding=12)
@@ -251,6 +259,7 @@ class LtsAnalysisApp(tk.Tk):
         notebook.add(root, text="スペクトル差し引き")
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
+        root.rowconfigure(2, weight=1)
 
         top_box = ttk.LabelFrame(root, text="保存条件", padding=10)
         top_box.grid(row=0, column=0, sticky="ew")
@@ -296,13 +305,61 @@ class LtsAnalysisApp(tk.Tk):
         ttk.Button(bg_actions, text="選択削除", command=lambda: self._remove_selected_subtract("background")).pack(side="left", padx=8)
         ttk.Button(bg_actions, text="全削除", command=lambda: self._clear_subtract_files("background")).pack(side="left")
 
+        preview_box = ttk.LabelFrame(root, text="差し引き後プレビュー", padding=8)
+        preview_box.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        preview_box.columnconfigure(0, weight=1)
+        preview_box.columnconfigure(1, weight=1)
+        preview_box.rowconfigure(0, weight=1)
+        self.subtract_image_canvas = tk.Canvas(preview_box, bg="white", height=180)
+        self.subtract_image_canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.subtract_spectrum_canvas = tk.Canvas(preview_box, bg="white", height=180)
+        self.subtract_spectrum_canvas.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+
         bottom = ttk.Frame(root)
-        bottom.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        bottom.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        ttk.Button(bottom, text="プレビュー更新", command=self.preview_subtraction).pack(side="left")
         ttk.Button(bottom, text="差し引き保存", command=self.analyze_subtraction).pack(side="left")
         ttk.Button(bottom, text="ログ消去", command=lambda: self.subtract_log.delete("1.0", "end")).pack(side="left", padx=8)
 
         self.subtract_log = tk.Text(root, height=10, wrap="word")
-        self.subtract_log.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        self.subtract_log.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+
+    def _build_viewer_tab(self, notebook: ttk.Notebook) -> None:
+        root = ttk.Frame(notebook, padding=12)
+        notebook.add(root, text="SPEビューア")
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(1, weight=1)
+
+        file_box = ttk.LabelFrame(root, text="ファイルと積算範囲", padding=10)
+        file_box.grid(row=0, column=0, sticky="ew")
+        file_box.columnconfigure(1, weight=1)
+        self._file_row(file_box, 0, "SPEファイル", self.viewer_path)
+        self._entry(file_box, 0, 3, "y最小", self.viewer_y_min, "pixel")
+        self._entry(file_box, 0, 4, "y最大", self.viewer_y_max, "pixel")
+        ttk.Button(file_box, text="表示", command=self.show_spe_viewer).grid(row=0, column=5, padx=8)
+
+        view_box = ttk.Frame(root)
+        view_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        view_box.columnconfigure(0, weight=1)
+        view_box.columnconfigure(1, weight=1)
+        view_box.rowconfigure(0, weight=1)
+
+        image_box = ttk.LabelFrame(view_box, text="SPE画像", padding=8)
+        image_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        image_box.columnconfigure(0, weight=1)
+        image_box.rowconfigure(0, weight=1)
+        self.viewer_image_canvas = tk.Canvas(image_box, bg="white", height=430)
+        self.viewer_image_canvas.grid(row=0, column=0, sticky="nsew")
+
+        spectrum_box = ttk.LabelFrame(view_box, text="横方向スペクトル", padding=8)
+        spectrum_box.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        spectrum_box.columnconfigure(0, weight=1)
+        spectrum_box.rowconfigure(0, weight=1)
+        self.viewer_spectrum_canvas = tk.Canvas(spectrum_box, bg="white", height=430)
+        self.viewer_spectrum_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.viewer_log = tk.Text(root, height=7, wrap="word")
+        self.viewer_log.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
     def _file_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
@@ -394,6 +451,126 @@ class LtsAnalysisApp(tk.Tk):
         if value is None:
             return None
         return int(round(value))
+
+    @staticmethod
+    def _scaled_photo(image: np.ndarray, canvas: tk.Canvas) -> ImageTk.PhotoImage:
+        arr = image.astype(np.float64)
+        lo, hi = np.percentile(arr, [1, 99.7])
+        if hi <= lo:
+            hi = float(arr.max() if arr.max() > lo else lo + 1)
+        scaled = np.clip((arr - lo) / (hi - lo), 0, 1)
+        pil_image = Image.fromarray((scaled * 255).astype(np.uint8), mode="L")
+
+        canvas.update_idletasks()
+        max_w = max(canvas.winfo_width(), 320)
+        max_h = max(canvas.winfo_height(), 180)
+        scale = min(max_w / pil_image.width, max_h / pil_image.height)
+        new_size = (max(1, int(pil_image.width * scale)), max(1, int(pil_image.height * scale)))
+        pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
+        return ImageTk.PhotoImage(pil_image)
+
+    def _draw_image_canvas(self, canvas: tk.Canvas, image: np.ndarray, title: str, attr_name: str) -> None:
+        canvas.delete("all")
+        photo = self._scaled_photo(image, canvas)
+        setattr(self, attr_name, photo)
+        canvas.update_idletasks()
+        width = max(canvas.winfo_width(), 320)
+        height = max(canvas.winfo_height(), 180)
+        canvas.create_image(width / 2, height / 2, image=photo, anchor="center")
+        canvas.create_rectangle(0, 0, width, 24, fill="white", outline="")
+        canvas.create_text(8, 12, anchor="w", text=title, fill="black")
+
+    @staticmethod
+    def _draw_spectrum_canvas(canvas: tk.Canvas, spectrum: np.ndarray, title: str, y_label: str = "counts") -> None:
+        canvas.delete("all")
+        canvas.update_idletasks()
+        width = max(canvas.winfo_width(), 420)
+        height = max(canvas.winfo_height(), 180)
+        left, right, top, bottom = 62, 20, 28, 48
+        plot_w = width - left - right
+        plot_h = height - top - bottom
+        arr = spectrum.astype(np.float64)
+        x_min, x_max = 0.0, float(max(arr.size - 1, 1))
+        y_min = float(np.percentile(arr, 1))
+        y_max = float(np.percentile(arr, 99.7))
+        if y_max <= y_min:
+            y_max = float(arr.max() if arr.max() > y_min else y_min + 1)
+        y_pad = (y_max - y_min) * 0.08
+        y_min -= y_pad
+        y_max += y_pad
+
+        def px(x: float) -> float:
+            return left + (x - x_min) / (x_max - x_min) * plot_w
+
+        def py(y: float) -> float:
+            return top + plot_h - (y - y_min) / (y_max - y_min) * plot_h
+
+        canvas.create_text(left, 12, anchor="w", text=title)
+        canvas.create_line(left, top + plot_h, left + plot_w, top + plot_h, fill="black")
+        canvas.create_line(left, top, left, top + plot_h, fill="black")
+        canvas.create_text(left + plot_w / 2, height - 18, text="pixel")
+        canvas.create_text(18, top + plot_h / 2, text=y_label, angle=90)
+
+        for i in range(5):
+            x_val = x_min + (x_max - x_min) * i / 4
+            x_pos = px(x_val)
+            canvas.create_line(x_pos, top + plot_h, x_pos, top + plot_h + 4, fill="black")
+            canvas.create_text(x_pos, top + plot_h + 16, text=f"{x_val:.0f}")
+            y_val = y_min + (y_max - y_min) * i / 4
+            y_pos = py(y_val)
+            canvas.create_line(left - 4, y_pos, left, y_pos, fill="black")
+            canvas.create_text(left - 8, y_pos, text=f"{y_val:.2g}", anchor="e")
+
+        if arr.size < 2:
+            return
+        step = max(1, int(arr.size / plot_w))
+        xs = np.arange(0, arr.size, step)
+        ys = arr[xs]
+        points = []
+        for x_value, y_value in zip(xs, ys):
+            points.extend([px(float(x_value)), py(float(y_value))])
+        if len(points) >= 4:
+            canvas.create_line(*points, fill="#1f5fbf", width=1)
+
+    def _make_subtracted_images(self, preview_only: bool = False) -> list[tuple[Path, np.ndarray]]:
+        if not self.subtract_target_files:
+            raise ValueError("差し引き対象SPEを1つ以上追加してください。")
+        if not self.subtract_background_files:
+            raise ValueError("差し引くSPEを1つ以上追加してください。")
+
+        scale = self._float(self.subtract_scale, "差し引き倍率")
+        background_images = []
+        reference_shape = None
+        for bg_path in self.subtract_background_files:
+            bg = read_spe(bg_path)
+            image = bg.image.astype(np.float64)
+            if reference_shape is None:
+                reference_shape = image.shape
+            elif image.shape != reference_shape:
+                raise ValueError(
+                    f"差し引くSPEの画像サイズが一致しません: {bg_path.name} "
+                    f"{image.shape} != {reference_shape}"
+                )
+            background_images.append(image)
+
+        background_mean = np.mean(np.stack(background_images, axis=0), axis=0)
+        target_files = self.subtract_target_files
+        if preview_only and self.subtract_target_list.curselection():
+            target_files = [self.subtract_target_files[self.subtract_target_list.curselection()[0]]]
+        elif preview_only:
+            target_files = [self.subtract_target_files[0]]
+
+        results = []
+        for target_path in target_files:
+            target = read_spe(target_path)
+            target_image = target.image.astype(np.float64)
+            if target_image.shape != background_mean.shape:
+                raise ValueError(
+                    f"対象SPEと差し引くSPEの画像サイズが一致しません: {target_path.name} "
+                    f"{target_image.shape} != {background_mean.shape}"
+                )
+            results.append((target_path, target_image - scale * background_mean))
+        return results
 
     def _fit_raman_signal(
         self,
@@ -680,32 +857,13 @@ class LtsAnalysisApp(tk.Tk):
 
     def analyze_subtraction(self) -> None:
         try:
-            if not self.subtract_target_files:
-                raise ValueError("差し引き対象SPEを1つ以上追加してください。")
-            if not self.subtract_background_files:
-                raise ValueError("差し引くSPEを1つ以上追加してください。")
             if not self.subtract_save_csv.get() and not self.subtract_save_spe.get():
                 raise ValueError("CSV保存またはSPE保存の少なくとも一方を選択してください。")
 
             out_dir = Path(self.subtract_out_dir.get())
             out_dir.mkdir(parents=True, exist_ok=True)
             scale = self._float(self.subtract_scale, "差し引き倍率")
-
-            background_images = []
-            reference_shape = None
-            for bg_path in self.subtract_background_files:
-                bg = read_spe(bg_path)
-                image = bg.image.astype(np.float64)
-                if reference_shape is None:
-                    reference_shape = image.shape
-                elif image.shape != reference_shape:
-                    raise ValueError(
-                        f"差し引くSPEの画像サイズが一致しません: {bg_path.name} "
-                        f"{image.shape} != {reference_shape}"
-                    )
-                background_images.append(image)
-
-            background_mean = np.mean(np.stack(background_images, axis=0), axis=0)
+            results = self._make_subtracted_images()
             saved_count = 0
             log_lines = [
                 "差し引き保存が完了しました。",
@@ -714,16 +872,7 @@ class LtsAnalysisApp(tk.Tk):
                 f"保存先: {out_dir}",
             ]
 
-            for target_path in self.subtract_target_files:
-                target = read_spe(target_path)
-                target_image = target.image.astype(np.float64)
-                if target_image.shape != background_mean.shape:
-                    raise ValueError(
-                        f"対象SPEと差し引くSPEの画像サイズが一致しません: {target_path.name} "
-                        f"{target_image.shape} != {background_mean.shape}"
-                    )
-
-                result_image = target_image - scale * background_mean
+            for target_path, result_image in results:
                 stem = target_path.stem
 
                 if self.subtract_save_csv.get():
@@ -738,12 +887,83 @@ class LtsAnalysisApp(tk.Tk):
                     saved_count += 1
                     log_lines.append(f"SPE: {spe_path.name}")
 
+            first_path, first_image = results[0]
+            self._draw_image_canvas(
+                self.subtract_image_canvas,
+                first_image,
+                f"{first_path.name} 差し引き後画像",
+                "subtract_image_photo",
+            )
+            self._draw_spectrum_canvas(
+                self.subtract_spectrum_canvas,
+                first_image.sum(axis=0),
+                "差し引き後スペクトル",
+            )
             self.subtract_log.insert("end", "\n".join(log_lines) + f"\n保存ファイル数: {saved_count}\n\n")
             self.subtract_log.see("end")
         except Exception as exc:
             messagebox.showerror("差し引きエラー", str(exc))
             self.subtract_log.insert("end", f"エラー: {exc}\n")
             self.subtract_log.see("end")
+
+    def preview_subtraction(self) -> None:
+        try:
+            results = self._make_subtracted_images(preview_only=True)
+            target_path, result_image = results[0]
+            self._draw_image_canvas(
+                self.subtract_image_canvas,
+                result_image,
+                f"{target_path.name} 差し引き後画像",
+                "subtract_image_photo",
+            )
+            self._draw_spectrum_canvas(
+                self.subtract_spectrum_canvas,
+                result_image.sum(axis=0),
+                "差し引き後スペクトル",
+            )
+            self.subtract_log.insert("end", f"プレビュー更新: {target_path.name}\n")
+            self.subtract_log.see("end")
+        except Exception as exc:
+            messagebox.showerror("プレビューエラー", str(exc))
+            self.subtract_log.insert("end", f"エラー: {exc}\n")
+            self.subtract_log.see("end")
+
+    def show_spe_viewer(self) -> None:
+        try:
+            path = Path(self.viewer_path.get())
+            if not path.exists():
+                raise FileNotFoundError(f"SPEファイルが見つかりません: {path}")
+            spe = read_spe(path)
+            y_min = self._optional_int(self.viewer_y_min, "y最小")
+            y_max = self._optional_int(self.viewer_y_max, "y最大")
+            spectrum = spectrum_from_image(spe.image, y_min, y_max)
+            y0 = 0 if y_min is None else y_min
+            y1 = spe.image.shape[0] if y_max is None else y_max
+
+            self._draw_image_canvas(self.viewer_image_canvas, spe.image, path.name, "viewer_image_photo")
+            self._draw_spectrum_canvas(
+                self.viewer_spectrum_canvas,
+                spectrum,
+                f"積算スペクトル y={y0}:{y1}",
+            )
+            self.viewer_log.delete("1.0", "end")
+            self.viewer_log.insert(
+                "end",
+                "\n".join(
+                    [
+                        "表示しました。",
+                        f"ファイル: {path}",
+                        f"画像サイズ: {spe.xdim} x {spe.ydim} pixel",
+                        f"frames: {spe.frames}",
+                        f"dtype_code: {spe.dtype_code}",
+                        f"積算範囲: y={y0}:{y1} pixel",
+                    ]
+                )
+                + "\n",
+            )
+        except Exception as exc:
+            messagebox.showerror("ビューアエラー", str(exc))
+            self.viewer_log.insert("end", f"エラー: {exc}\n")
 
     def _log(self, text: str) -> None:
         self.log.insert("end", text + "\n")
