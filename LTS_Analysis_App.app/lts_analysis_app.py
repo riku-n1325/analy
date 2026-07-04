@@ -143,6 +143,8 @@ class LtsAnalysisApp(tk.Tk):
         self.y_max = tk.StringVar(value="970")
         self.fixed_center = tk.StringVar(value="536.8749")
         self.raman_center = tk.StringVar(value="650")
+        self.raman_y_min = tk.StringVar(value="")
+        self.raman_y_max = tk.StringVar(value="")
         self.raman_stokes_min = tk.StringVar(value="")
         self.raman_stokes_max = tk.StringVar(value="")
         self.raman_max_peaks = tk.StringVar(value="12")
@@ -159,6 +161,8 @@ class LtsAnalysisApp(tk.Tk):
         self.ts_baseline_right_max = tk.StringVar(value="1000")
         self.ts_median_width = tk.StringVar(value="21")
         self.ts_threshold_fraction = tk.StringVar(value="0.15")
+        self.ts_mask_min = tk.StringVar(value="")
+        self.ts_mask_max = tk.StringVar(value="")
         self.ts_fix_center = tk.BooleanVar(value=True)
 
         self.pressure_pa = tk.StringVar(value="1000")
@@ -180,7 +184,7 @@ class LtsAnalysisApp(tk.Tk):
         self.raman_start_energy_mj = tk.StringVar(value="1")
         self.raman_end_energy_mj = tk.StringVar(value="1")
         self.correction_factor = tk.StringVar(value="1")
-        self.area_kind = tk.StringVar(value="gaussian")
+        self.area_kind = tk.StringVar(value="multi_stokes")
 
         self.pressure_folder = tk.StringVar(value="")
         self.pressure_peak_center = tk.StringVar(value="")
@@ -202,15 +206,19 @@ class LtsAnalysisApp(tk.Tk):
         self.viewer_x_max = tk.StringVar(value="")
         self.viewer_y_min = tk.StringVar(value="")
         self.viewer_y_max = tk.StringVar(value="")
+        self.viewer_peak_count = tk.StringVar(value="")
         self.viewer_image_photo: ImageTk.PhotoImage | None = None
         self.viewer_current_image: np.ndarray | None = None
         self.viewer_display: dict[str, float | tuple[int, int]] = {}
         self.viewer_drag_start: tuple[int, int] | None = None
         self.viewer_drag_rect_id: int | None = None
+        self.thomson_fit_photo: ImageTk.PhotoImage | None = None
+        self.raman_fit_photo: ImageTk.PhotoImage | None = None
         self._pending_pressure_rows: list[dict[str, str]] = []
         self._pending_geometry = ""
 
         self._load_settings()
+        self.area_kind.set("multi_stokes")
         self._build_ui()
         self._restore_pressure_rows()
         if self._pending_geometry:
@@ -224,6 +232,8 @@ class LtsAnalysisApp(tk.Tk):
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True)
         self._build_calibration_tab(notebook)
+        self._build_thomson_fit_tab(notebook)
+        self._build_raman_fit_tab(notebook)
         self._build_pressure_tab(notebook)
         self._build_subtraction_tab(notebook)
         self._build_viewer_tab(notebook)
@@ -239,6 +249,8 @@ class LtsAnalysisApp(tk.Tk):
             "y_max": self.y_max,
             "fixed_center": self.fixed_center,
             "raman_center": self.raman_center,
+            "raman_y_min": self.raman_y_min,
+            "raman_y_max": self.raman_y_max,
             "raman_stokes_min": self.raman_stokes_min,
             "raman_stokes_max": self.raman_stokes_max,
             "raman_max_peaks": self.raman_max_peaks,
@@ -255,6 +267,8 @@ class LtsAnalysisApp(tk.Tk):
             "ts_baseline_right_max": self.ts_baseline_right_max,
             "ts_median_width": self.ts_median_width,
             "ts_threshold_fraction": self.ts_threshold_fraction,
+            "ts_mask_min": self.ts_mask_min,
+            "ts_mask_max": self.ts_mask_max,
             "pressure_pa": self.pressure_pa,
             "gas_temperature_k": self.gas_temperature_k,
             "raman_dsigma": self.raman_dsigma,
@@ -289,6 +303,7 @@ class LtsAnalysisApp(tk.Tk):
             "viewer_x_max": self.viewer_x_max,
             "viewer_y_min": self.viewer_y_min,
             "viewer_y_max": self.viewer_y_max,
+            "viewer_peak_count": self.viewer_peak_count,
         }
 
     def _settings_bools(self) -> dict[str, tk.BooleanVar]:
@@ -350,11 +365,9 @@ class LtsAnalysisApp(tk.Tk):
 
         canvas = tk.Canvas(tab, highlightthickness=0)
         y_scroll = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        x_scroll = ttk.Scrollbar(tab, orient="horizontal", command=canvas.xview)
-        canvas.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        canvas.configure(yscrollcommand=y_scroll.set)
         canvas.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
-        x_scroll.grid(row=1, column=0, sticky="ew")
 
         root = ttk.Frame(canvas, padding=12)
         window_id = canvas.create_window((0, 0), window=root, anchor="nw")
@@ -363,7 +376,7 @@ class LtsAnalysisApp(tk.Tk):
             canvas.configure(scrollregion=canvas.bbox("all"))
 
         def update_inner_width(event: tk.Event) -> None:
-            canvas.itemconfigure(window_id, width=max(event.width, root.winfo_reqwidth()))
+            canvas.itemconfigure(window_id, width=event.width)
             update_scrollregion()
 
         def on_mousewheel(event: tk.Event) -> None:
@@ -410,10 +423,10 @@ class LtsAnalysisApp(tk.Tk):
         self._entry(param_box, 2, 5, "TS Energy", self.thomson_energy_mj, "mJ")
         self._entry(param_box, 3, 0, "Stokes探索最小", self.raman_stokes_min, "pixel")
         self._entry(param_box, 3, 1, "Stokes探索最大", self.raman_stokes_max, "pixel")
-        self._entry(param_box, 3, 2, "最大ピーク数", self.raman_max_peaks, "個")
-        self._entry(param_box, 3, 3, "ピークしきい値", self.raman_peak_threshold, "-")
-        self._entry(param_box, 3, 4, "TS時刻", self.thomson_time_h, "h")
-        self._entry(param_box, 3, 5, "補正係数", self.correction_factor, "-")
+        self._entry(param_box, 3, 2, "ラマンy最小", self.raman_y_min, "pixel")
+        self._entry(param_box, 3, 3, "ラマンy最大", self.raman_y_max, "pixel")
+        self._entry(param_box, 3, 4, "Stokesピーク数", self.raman_max_peaks, "個")
+        self._entry(param_box, 3, 5, "ピークしきい値", self.raman_peak_threshold, "-")
         self._entry(param_box, 4, 0, "TS fit最小", self.ts_fit_min, "pixel")
         self._entry(param_box, 4, 1, "TS fit最大", self.ts_fit_max, "pixel")
         self._entry(param_box, 4, 2, "背景左最小", self.ts_baseline_left_min, "pixel")
@@ -422,6 +435,10 @@ class LtsAnalysisApp(tk.Tk):
         self._entry(param_box, 4, 5, "背景右最大", self.ts_baseline_right_max, "pixel")
         self._entry(param_box, 5, 0, "平滑化幅", self.ts_median_width, "pixel")
         self._entry(param_box, 5, 1, "fitしきい値", self.ts_threshold_fraction, "-")
+        self._entry(param_box, 5, 2, "逆スリット最小", self.ts_mask_min, "pixel")
+        self._entry(param_box, 5, 3, "逆スリット最大", self.ts_mask_max, "pixel")
+        self._entry(param_box, 5, 4, "TS時刻", self.thomson_time_h, "h")
+        self._entry(param_box, 5, 5, "補正係数", self.correction_factor, "-")
 
         self._entry(param_box, 6, 0, "開始時刻", self.raman_start_time_h, "h")
         self._entry(param_box, 6, 1, "開始圧力", self.raman_start_pressure_pa, "Pa")
@@ -437,10 +454,7 @@ class LtsAnalysisApp(tk.Tk):
         ttk.Label(area_frame, text="校正").pack(side="left")
         ttk.Radiobutton(area_frame, text="単一ラマン", value="single", variable=self.calibration_mode).pack(side="left", padx=8)
         ttk.Radiobutton(area_frame, text="時間補間", value="drift", variable=self.calibration_mode).pack(side="left")
-        ttk.Label(area_frame, text="面積").pack(side="left")
-        ttk.Radiobutton(area_frame, text="ガウス面積", value="gaussian", variable=self.area_kind).pack(side="left", padx=8)
-        ttk.Radiobutton(area_frame, text="直接積分", value="direct", variable=self.area_kind).pack(side="left")
-        ttk.Radiobutton(area_frame, text="複数Stokes合計", value="multi_stokes", variable=self.area_kind).pack(side="left", padx=8)
+        ttk.Label(area_frame, text="ラマン面積: 複数Stokesピーク合計で固定").pack(side="left", padx=14)
 
         actions = ttk.Frame(root)
         actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -449,6 +463,54 @@ class LtsAnalysisApp(tk.Tk):
 
         self.log = tk.Text(root, height=20, wrap="word")
         self.log.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+
+    def _build_thomson_fit_tab(self, notebook: ttk.Notebook) -> None:
+        root = ttk.Frame(notebook, padding=12)
+        notebook.add(root, text="トムソンフィット")
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
+        root.rowconfigure(1, weight=1)
+
+        fit_box = ttk.LabelFrame(root, text="トムソンスペクトルと非線形最小二乗ガウスフィット", padding=8)
+        fit_box.grid(row=0, column=0, sticky="nsew")
+        fit_box.columnconfigure(0, weight=1)
+        fit_box.rowconfigure(0, weight=1)
+        self.calib_ts_fit_canvas = tk.Canvas(fit_box, bg="white", height=300)
+        self.calib_ts_fit_canvas.grid(row=0, column=0, sticky="nsew")
+
+        residual_box = ttk.LabelFrame(root, text="残差", padding=8)
+        residual_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        residual_box.columnconfigure(0, weight=1)
+        residual_box.rowconfigure(0, weight=1)
+        self.calib_ts_residual_canvas = tk.Canvas(residual_box, bg="white", height=220)
+        self.calib_ts_residual_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.calib_ts_fit_log = tk.Text(root, height=6, wrap="word")
+        self.calib_ts_fit_log.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+
+    def _build_raman_fit_tab(self, notebook: ttk.Notebook) -> None:
+        root = ttk.Frame(notebook, padding=12)
+        notebook.add(root, text="ラマンフィット")
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
+        root.rowconfigure(1, weight=1)
+
+        fit_box = ttk.LabelFrame(root, text="ラマンスペクトルと複数Stokesピーク非線形最小二乗フィット", padding=8)
+        fit_box.grid(row=0, column=0, sticky="nsew")
+        fit_box.columnconfigure(0, weight=1)
+        fit_box.rowconfigure(0, weight=1)
+        self.calib_raman_fit_canvas = tk.Canvas(fit_box, bg="white", height=300)
+        self.calib_raman_fit_canvas.grid(row=0, column=0, sticky="nsew")
+
+        residual_box = ttk.LabelFrame(root, text="残差", padding=8)
+        residual_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        residual_box.columnconfigure(0, weight=1)
+        residual_box.rowconfigure(0, weight=1)
+        self.calib_raman_residual_canvas = tk.Canvas(residual_box, bg="white", height=220)
+        self.calib_raman_residual_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.calib_raman_fit_log = tk.Text(root, height=6, wrap="word")
+        self.calib_raman_fit_log.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
     def _build_pressure_tab(self, notebook: ttk.Notebook) -> None:
         root = ttk.Frame(notebook, padding=12)
@@ -522,11 +584,9 @@ class LtsAnalysisApp(tk.Tk):
 
         canvas = tk.Canvas(tab, highlightthickness=0)
         y_scroll = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        x_scroll = ttk.Scrollbar(tab, orient="horizontal", command=canvas.xview)
-        canvas.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        canvas.configure(yscrollcommand=y_scroll.set)
         canvas.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
-        x_scroll.grid(row=1, column=0, sticky="ew")
 
         root = ttk.Frame(canvas, padding=12)
         window_id = canvas.create_window((0, 0), window=root, anchor="nw")
@@ -535,7 +595,7 @@ class LtsAnalysisApp(tk.Tk):
             canvas.configure(scrollregion=canvas.bbox("all"))
 
         def update_inner_width(event: tk.Event) -> None:
-            canvas.itemconfigure(window_id, width=max(event.width, root.winfo_reqwidth()))
+            canvas.itemconfigure(window_id, width=event.width)
             update_scrollregion()
 
         def on_mousewheel(event: tk.Event) -> None:
@@ -572,28 +632,28 @@ class LtsAnalysisApp(tk.Tk):
         preview_box = ttk.LabelFrame(root, text="差し引き後プレビュー", padding=8)
         preview_box.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         preview_box.columnconfigure(0, weight=1)
-        preview_box.columnconfigure(1, weight=1)
         preview_box.rowconfigure(0, weight=1)
-        self.subtract_image_canvas = tk.Canvas(preview_box, bg="white", width=760, height=340)
-        self.subtract_image_canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self.subtract_spectrum_canvas = tk.Canvas(preview_box, bg="white", width=760, height=340)
-        self.subtract_spectrum_canvas.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        preview_box.rowconfigure(1, weight=1)
+        self.subtract_image_canvas = tk.Canvas(preview_box, bg="white", height=280)
+        self.subtract_image_canvas.grid(row=0, column=0, sticky="nsew")
+        self.subtract_spectrum_canvas = tk.Canvas(preview_box, bg="white", height=240)
+        self.subtract_spectrum_canvas.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
 
         fit_box = ttk.LabelFrame(root, text="スペクトルフィッティング", padding=8)
         fit_box.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
         fit_box.columnconfigure(0, weight=1)
-        fit_box.columnconfigure(1, weight=1)
         fit_box.rowconfigure(1, weight=1)
+        fit_box.rowconfigure(2, weight=1)
 
         fit_controls = ttk.Frame(fit_box)
         fit_controls.grid(row=0, column=0, columnspan=2, sticky="ew")
         ttk.Label(fit_controls, text="選択中のトムソン散乱スペクトルを自動で最小二乗ガウスフィットします。").pack(side="left")
         ttk.Button(fit_controls, text="トムソンガウスフィット", command=self.fit_subtracted_spectrum).pack(side="left", padx=12)
 
-        self.subtract_fit_canvas = tk.Canvas(fit_box, bg="white", width=900, height=420)
-        self.subtract_fit_canvas.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(8, 0))
-        self.subtract_residual_canvas = tk.Canvas(fit_box, bg="white", width=900, height=420)
-        self.subtract_residual_canvas.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(8, 0))
+        self.subtract_fit_canvas = tk.Canvas(fit_box, bg="white", height=300)
+        self.subtract_fit_canvas.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        self.subtract_residual_canvas = tk.Canvas(fit_box, bg="white", height=240)
+        self.subtract_residual_canvas.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
 
         bottom = ttk.Frame(root)
         bottom.grid(row=4, column=0, sticky="ew", pady=(10, 0))
@@ -618,30 +678,31 @@ class LtsAnalysisApp(tk.Tk):
         self._entry(file_box, 0, 4, "x最大", self.viewer_x_max, "pixel")
         self._entry(file_box, 1, 3, "y最小", self.viewer_y_min, "pixel")
         self._entry(file_box, 1, 4, "y最大", self.viewer_y_max, "pixel")
+        self._entry(file_box, 2, 3, "Stokesピーク数", self.viewer_peak_count, "個")
         ttk.Button(file_box, text="表示", command=self.show_spe_viewer).grid(row=0, column=5, padx=8)
         ttk.Button(file_box, text="解析タブへ反映", command=self.apply_viewer_roi_to_analysis).grid(row=1, column=5, padx=8)
 
         view_box = ttk.Frame(root)
         view_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         view_box.columnconfigure(0, weight=1)
-        view_box.columnconfigure(1, weight=1)
         view_box.rowconfigure(0, weight=1)
+        view_box.rowconfigure(1, weight=1)
 
         image_box = ttk.LabelFrame(view_box, text="SPE画像", padding=8)
-        image_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        image_box.grid(row=0, column=0, sticky="nsew")
         image_box.columnconfigure(0, weight=1)
         image_box.rowconfigure(0, weight=1)
-        self.viewer_image_canvas = tk.Canvas(image_box, bg="white", height=430)
+        self.viewer_image_canvas = tk.Canvas(image_box, bg="white", height=300)
         self.viewer_image_canvas.grid(row=0, column=0, sticky="nsew")
         self.viewer_image_canvas.bind("<ButtonPress-1>", self._viewer_drag_start)
         self.viewer_image_canvas.bind("<B1-Motion>", self._viewer_drag_motion)
         self.viewer_image_canvas.bind("<ButtonRelease-1>", self._viewer_drag_end)
 
         spectrum_box = ttk.LabelFrame(view_box, text="横方向スペクトル", padding=8)
-        spectrum_box.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        spectrum_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         spectrum_box.columnconfigure(0, weight=1)
         spectrum_box.rowconfigure(0, weight=1)
-        self.viewer_spectrum_canvas = tk.Canvas(spectrum_box, bg="white", height=430)
+        self.viewer_spectrum_canvas = tk.Canvas(spectrum_box, bg="white", height=260)
         self.viewer_spectrum_canvas.grid(row=0, column=0, sticky="nsew")
 
         self.viewer_log = tk.Text(root, height=7, wrap="word")
@@ -663,8 +724,8 @@ class LtsAnalysisApp(tk.Tk):
         ttk.Label(frame, text=label).pack(anchor="w")
         value_frame = ttk.Frame(frame)
         value_frame.pack(fill="x")
-        ttk.Entry(value_frame, textvariable=var, width=12).pack(side="left", fill="x", expand=True)
-        ttk.Label(value_frame, text=unit, width=9).pack(side="left", padx=(4, 0))
+        ttk.Entry(value_frame, textvariable=var, width=9).pack(side="left", fill="x", expand=True)
+        ttk.Label(value_frame, text=unit, width=7).pack(side="left", padx=(4, 0))
 
     def _browse_file(self, var: tk.StringVar) -> None:
         path = filedialog.askopenfilename(filetypes=[("SPE files", "*.spe"), ("All files", "*.*")])
@@ -1073,9 +1134,15 @@ class LtsAnalysisApp(tk.Tk):
             self.ts_fit_max.set(str(x1))
             self.raman_stokes_min.set(str(x0))
             self.raman_stokes_max.set(str(x1))
+            self.raman_y_min.set(str(y0))
+            self.raman_y_max.set(str(y1))
+            peak_count = self.viewer_peak_count.get().strip()
+            if peak_count:
+                self.raman_max_peaks.set(peak_count)
             self.viewer_log.insert(
                 "end",
-                f"解析タブへ反映しました: TS y={y0}:{y1}, TS fit x={x0}:{x1}, Stokes探索 x={x0}:{x1}\n",
+                f"解析タブへ反映しました: TS y={y0}:{y1}, TS fit x={x0}:{x1}, "
+                f"ラマンROI x={x0}:{x1}, y={y0}:{y1}, Stokesピーク数={self.raman_max_peaks.get()}\n",
             )
             self.viewer_log.see("end")
         except Exception as exc:
@@ -1085,48 +1152,43 @@ class LtsAnalysisApp(tk.Tk):
     def _fit_raman_signal(
         self,
         raman_file: Path,
-        raman_center: float | None,
+        _raman_center: float | None,
+        raman_y_min: int | None,
+        raman_y_max: int | None,
         raman_stokes_min: int | None,
         raman_stokes_max: int | None,
         raman_max_peaks: int,
         raman_peak_threshold: float,
     ) -> dict[str, object]:
         raman = read_spe(raman_file)
-        raman_spectrum = spectrum_from_image(raman.image, None, None)
-        raman_multi_fit = None
-        if self.area_kind.get() == "multi_stokes":
-            raman_multi_fit = fit_multiple_gaussian_peaks(
-                raman_spectrum,
-                min_pixel=raman_stokes_min,
-                max_pixel=raman_stokes_max,
-                max_peaks=raman_max_peaks,
-                window=14,
-                sideband=55,
-                min_prominence_fraction=raman_peak_threshold,
-            )
-            raman_fit = raman_multi_fit.peaks[0]
-            area = raman_multi_fit.total_gaussian_area
-            r_squared = raman_multi_fit.mean_r_squared
-            peak_count = len(raman_multi_fit.peaks)
-            peak_pixels = ", ".join(f"{peak.center_pixel:.2f}" for peak in raman_multi_fit.peaks)
-        else:
-            raman_fit = fit_gaussian_log_parabola(
-                raman_spectrum,
-                peak_pixel=None if raman_center is None else int(round(raman_center)),
-                window=45,
-                sideband=100,
-                fixed_center=raman_center,
-            )
-            if self.area_kind.get() == "gaussian":
-                area = raman_fit.gaussian_area
-            else:
-                area = raman_fit.direct_area
-            r_squared = raman_fit.r_squared
-            peak_count = 1
-            peak_pixels = f"{raman_fit.center_pixel:.2f}"
+        raman_spectrum = spectrum_from_image(raman.image, raman_y_min, raman_y_max)
+        raman_multi_fit = fit_multiple_gaussian_peaks(
+            raman_spectrum,
+            min_pixel=raman_stokes_min,
+            max_pixel=raman_stokes_max,
+            max_peaks=raman_max_peaks,
+            window=14,
+            sideband=55,
+            min_prominence_fraction=raman_peak_threshold,
+        )
+        raman_fit = raman_multi_fit.peaks[0]
+        area = raman_multi_fit.total_gaussian_area
+        r_squared = raman_multi_fit.mean_r_squared
+        peak_count = len(raman_multi_fit.peaks)
+        peak_pixels = ", ".join(f"{peak.center_pixel:.2f}" for peak in raman_multi_fit.peaks)
+        x_values = np.arange(raman_spectrum.size, dtype=np.float64)
+        fit_curve = np.zeros_like(x_values, dtype=np.float64)
+        if raman_multi_fit.peaks:
+            baseline = float(np.median([peak.baseline for peak in raman_multi_fit.peaks]))
+            fit_curve += baseline
+            for peak in raman_multi_fit.peaks:
+                fit_curve += peak.amplitude * np.exp(-0.5 * ((x_values - peak.center_pixel) / peak.sigma_pixel) ** 2)
 
         return {
             "fit": raman_fit,
+            "multi_fit": raman_multi_fit,
+            "spectrum": raman_spectrum,
+            "fit_curve": fit_curve,
             "area": float(area),
             "r_squared": float(r_squared),
             "peak_count": int(peak_count),
@@ -1150,6 +1212,7 @@ class LtsAnalysisApp(tk.Tk):
         stage = "解析開始"
         debug_values: dict[str, float | int | str] = {}
         try:
+            self.area_kind.set("multi_stokes")
             stage = "出力先フォルダの準備"
             out_dir = Path(self.out_dir.get())
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -1174,6 +1237,8 @@ class LtsAnalysisApp(tk.Tk):
             y_max = self._int(self.y_max, "TS y最大")
             center = self._float(self.fixed_center, "レーザー中心")
             raman_center = self._optional_float(self.raman_center, "ラマン中心")
+            raman_y_min = self._optional_int(self.raman_y_min, "ラマンy最小")
+            raman_y_max = self._optional_int(self.raman_y_max, "ラマンy最大")
             raman_stokes_min = self._optional_int(self.raman_stokes_min, "Stokes探索最小")
             raman_stokes_max = self._optional_int(self.raman_stokes_max, "Stokes探索最大")
             raman_max_peaks = self._int(self.raman_max_peaks, "最大ピーク数")
@@ -1201,7 +1266,17 @@ class LtsAnalysisApp(tk.Tk):
             ts_baseline_right_max = self._int(self.ts_baseline_right_max, "背景右最大")
             ts_median_width = self._int(self.ts_median_width, "平滑化幅")
             ts_threshold_fraction = self._float(self.ts_threshold_fraction, "fitしきい値")
+            ts_mask_min = self._optional_int(self.ts_mask_min, "逆スリット最小")
+            ts_mask_max = self._optional_int(self.ts_mask_max, "逆スリット最大")
             self._validate_pixel_range(y_min, y_max, "TS y範囲")
+            if raman_y_min is not None or raman_y_max is not None:
+                if raman_y_min is None or raman_y_max is None:
+                    raise ValueError("ラマンy範囲は最小・最大を両方入力するか、両方空欄にしてください。")
+                self._validate_pixel_range(raman_y_min, raman_y_max, "ラマンy範囲")
+            if raman_stokes_min is not None or raman_stokes_max is not None:
+                if raman_stokes_min is None or raman_stokes_max is None:
+                    raise ValueError("Stokes探索範囲は最小・最大を両方入力するか、両方空欄にしてください。")
+                self._validate_pixel_range(raman_stokes_min, raman_stokes_max, "Stokes探索範囲")
             self._validate_pixel_range(ts_fit_min, ts_fit_max, "TS fit範囲")
             self._validate_pixel_range(ts_baseline_left_min, ts_baseline_left_max, "背景左範囲")
             self._validate_pixel_range(ts_baseline_right_min, ts_baseline_right_max, "背景右範囲")
@@ -1214,6 +1289,10 @@ class LtsAnalysisApp(tk.Tk):
                 )
             self._positive(float(ts_median_width), "平滑化幅")
             self._positive(ts_threshold_fraction, "fitしきい値")
+            if ts_mask_min is not None or ts_mask_max is not None:
+                if ts_mask_min is None or ts_mask_max is None:
+                    raise ValueError("逆スリット範囲は最小・最大を両方入力するか、両方空欄にしてください。")
+                self._validate_pixel_range(ts_mask_min, ts_mask_max, "逆スリット範囲")
             debug_values.update(
                 {
                     "mode": self.calibration_mode.get(),
@@ -1222,6 +1301,8 @@ class LtsAnalysisApp(tk.Tk):
                     "y_max": y_max,
                     "laser_center_pixel": center,
                     "raman_center_pixel": "" if raman_center is None else raman_center,
+                    "raman_y_min": "" if raman_y_min is None else raman_y_min,
+                    "raman_y_max": "" if raman_y_max is None else raman_y_max,
                     "nm_per_pixel": nm_per_pixel,
                     "laser_wavelength_nm": laser_nm,
                     "scattering_angle_deg": angle,
@@ -1238,6 +1319,8 @@ class LtsAnalysisApp(tk.Tk):
                     "ts_fit_min": ts_fit_min,
                     "ts_fit_max": ts_fit_max,
                     "ts_threshold_fraction": ts_threshold_fraction,
+                    "ts_mask_min": "" if ts_mask_min is None else ts_mask_min,
+                    "ts_mask_max": "" if ts_mask_max is None else ts_mask_max,
                 }
             )
 
@@ -1260,6 +1343,8 @@ class LtsAnalysisApp(tk.Tk):
                 median_width=ts_median_width,
                 threshold_fraction=ts_threshold_fraction,
                 fixed_center=center if self.ts_fix_center.get() else None,
+                mask_min=ts_mask_min,
+                mask_max=ts_mask_max,
             )
 
             if self.area_kind.get() == "gaussian":
@@ -1322,6 +1407,8 @@ class LtsAnalysisApp(tk.Tk):
                 raman_start_info = self._fit_raman_signal(
                     raman_start_file,
                     raman_center,
+                    raman_y_min,
+                    raman_y_max,
                     raman_stokes_min,
                     raman_stokes_max,
                     raman_max_peaks,
@@ -1331,6 +1418,8 @@ class LtsAnalysisApp(tk.Tk):
                 raman_end_info = self._fit_raman_signal(
                     raman_end_file,
                     raman_center,
+                    raman_y_min,
+                    raman_y_max,
                     raman_stokes_min,
                     raman_stokes_max,
                     raman_max_peaks,
@@ -1380,6 +1469,8 @@ class LtsAnalysisApp(tk.Tk):
                 raman_info = self._fit_raman_signal(
                     raman_file,
                     raman_center,
+                    raman_y_min,
+                    raman_y_max,
                     raman_stokes_min,
                     raman_stokes_max,
                     raman_max_peaks,
@@ -1425,6 +1516,68 @@ class LtsAnalysisApp(tk.Tk):
             alpha = scattering_parameter_alpha(ne, te, laser_nm, angle)
             debug_values["scattering_alpha"] = alpha
 
+            stage = "フィット表示タブの更新"
+            ts_x_values = np.arange(ts_smooth.size, dtype=np.float64)
+            self._draw_fit_overlay_canvas(
+                self.calib_ts_fit_canvas,
+                ts_x_values,
+                ts_smooth,
+                ts_fit_curve,
+                "トムソン非線形最小二乗ガウスフィット",
+            )
+            self._draw_spectrum_canvas(
+                self.calib_ts_residual_canvas,
+                ts_smooth - ts_fit_curve,
+                "トムソン残差",
+                x_start=0,
+            )
+            self.calib_ts_fit_log.delete("1.0", "end")
+            self.calib_ts_fit_log.insert(
+                "end",
+                "\n".join(
+                    [
+                        f"中心: {ts_fit.center_pixel:.3f} pixel",
+                        f"sigma: {ts_fit.sigma_pixel:.3f} pixel",
+                        f"FWHM: {ts_fit.fwhm_pixel:.3f} pixel",
+                        f"面積: {float(ts_area):.6e} count*pixel",
+                        f"R^2: {ts_fit.r_squared:.4f}",
+                        f"逆スリット除外: {ts_mask_min}:{ts_mask_max} pixel" if ts_mask_min is not None else "逆スリット除外: なし",
+                    ]
+                )
+            )
+
+            display_raman_info = raman_start_info if self.calibration_mode.get() == "drift" else raman_info
+            raman_spectrum_display = display_raman_info["spectrum"]
+            raman_fit_curve_display = display_raman_info["fit_curve"]
+            if isinstance(raman_spectrum_display, np.ndarray) and isinstance(raman_fit_curve_display, np.ndarray):
+                raman_x_values = np.arange(raman_spectrum_display.size, dtype=np.float64)
+                self._draw_fit_overlay_canvas(
+                    self.calib_raman_fit_canvas,
+                    raman_x_values,
+                    raman_spectrum_display,
+                    raman_fit_curve_display,
+                    "ラマン複数Stokesピーク非線形最小二乗フィット",
+                )
+                self._draw_spectrum_canvas(
+                    self.calib_raman_residual_canvas,
+                    raman_spectrum_display - raman_fit_curve_display,
+                    "ラマン残差",
+                    x_start=0,
+                )
+            self.calib_raman_fit_log.delete("1.0", "end")
+            self.calib_raman_fit_log.insert(
+                "end",
+                "\n".join(
+                    [
+                        f"ピーク数: {raman_peak_count}",
+                        f"ピーク位置: {raman_peak_pixels} pixel",
+                        f"合計面積: {raman_area:.6e} count*pixel",
+                        f"平均R^2: {raman_r_squared:.4f}",
+                        f"ROI: x={raman_stokes_min}:{raman_stokes_max}, y={raman_y_min}:{raman_y_max}",
+                    ]
+                )
+            )
+
             stage = "解析結果CSVの保存"
             result_path = out_dir / "latest_lts_result.csv"
             ts_curve_path = out_dir / "latest_thomson_fit_curve.csv"
@@ -1445,12 +1598,16 @@ class LtsAnalysisApp(tk.Tk):
                     "thomson_baseline_right_max": (ts_baseline_right_max, "pixel"),
                     "thomson_median_width": (ts_median_width, "pixel"),
                     "thomson_threshold_fraction": (ts_threshold_fraction, ""),
+                    "thomson_mask_min": (float("nan") if ts_mask_min is None else ts_mask_min, "pixel"),
+                    "thomson_mask_max": (float("nan") if ts_mask_max is None else ts_mask_max, "pixel"),
                     "thomson_fixed_center": (int(self.ts_fix_center.get()), "0_or_1"),
                     "raman_center": (raman_fit.center_pixel, "pixel"),
                     "raman_sigma": (raman_fit.sigma_pixel, "pixel"),
                     "raman_area": (raman_area, "count_pixel"),
                     "raman_r_squared": (raman_r_squared, ""),
                     "raman_peak_count": (raman_peak_count, "peaks"),
+                    "raman_y_min": (float("nan") if raman_y_min is None else raman_y_min, "pixel"),
+                    "raman_y_max": (float("nan") if raman_y_max is None else raman_y_max, "pixel"),
                     "gas_density": (gas_density, "m^-3"),
                     "calibration_mode": (drift_note, ""),
                     "throughput_k": (throughput_k, "m/mJ"),

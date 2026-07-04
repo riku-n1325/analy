@@ -59,6 +59,38 @@ def estimate_baseline(spectrum: np.ndarray, peak_pixel: int, window: int, sideba
     return float(np.median(np.concatenate(samples)))
 
 
+def _least_squares_lm(model, initial: np.ndarray, y: np.ndarray, max_iter: int = 80) -> np.ndarray:
+    params = initial.astype(np.float64).copy()
+    damping = 1e-3
+    best_sse = float(np.sum((model(params) - y) ** 2))
+    for _ in range(max_iter):
+        prediction = model(params)
+        residual = prediction - y
+        jac = np.empty((y.size, params.size), dtype=np.float64)
+        for col in range(params.size):
+            step = 1e-5 * (abs(params[col]) + 1.0)
+            shifted = params.copy()
+            shifted[col] += step
+            jac[:, col] = (model(shifted) - prediction) / step
+        lhs = jac.T @ jac + damping * np.eye(params.size)
+        rhs = -jac.T @ residual
+        try:
+            delta = np.linalg.solve(lhs, rhs)
+        except np.linalg.LinAlgError:
+            break
+        trial = params + delta
+        trial_sse = float(np.sum((model(trial) - y) ** 2))
+        if trial_sse < best_sse:
+            params = trial
+            best_sse = trial_sse
+            damping *= 0.35
+            if np.linalg.norm(delta) < 1e-7 * (np.linalg.norm(params) + 1.0):
+                break
+        else:
+            damping *= 3.0
+    return params
+
+
 def fit_gaussian_log_parabola(
     spectrum: np.ndarray,
     peak_pixel: int | None = None,
@@ -125,12 +157,48 @@ def fit_gaussian_log_parabola(
             center = float(peak_pixel - b / (2.0 * a))
             amplitude = float(math.exp(c - a * (center - peak_pixel) ** 2))
 
+    fit_x = x[use]
+    fit_y = y_raw[x0:x1][use]
+    if fixed_center is not None:
+        def model(params: np.ndarray) -> np.ndarray:
+            amp, log_sigma, baseline_value = params
+            sigma_value = math.exp(float(log_sigma)) + 1e-12
+            return baseline_value + amp * np.exp(-0.5 * ((fit_x - float(fixed_center)) / sigma_value) ** 2)
+
+        refined = _least_squares_lm(
+            model,
+            np.array([amplitude, math.log(max(sigma, 1e-6)), baseline], dtype=np.float64),
+            fit_y,
+        )
+        amplitude = float(refined[0])
+        center = float(fixed_center)
+        sigma = float(math.exp(float(refined[1])) + 1e-12)
+        baseline = float(refined[2])
+    else:
+        def model(params: np.ndarray) -> np.ndarray:
+            amp, center_value, log_sigma, baseline_value = params
+            sigma_value = math.exp(float(log_sigma)) + 1e-12
+            return baseline_value + amp * np.exp(-0.5 * ((fit_x - center_value) / sigma_value) ** 2)
+
+        refined = _least_squares_lm(
+            model,
+            np.array([amplitude, center, math.log(max(sigma, 1e-6)), baseline], dtype=np.float64),
+            fit_y,
+        )
+        amplitude = float(refined[0])
+        center = float(refined[1])
+        sigma = float(math.exp(float(refined[2])) + 1e-12)
+        baseline = float(refined[3])
+    if amplitude <= 0 or sigma <= 0:
+        raise ValueError("非線形最小二乗フィットで正の振幅・幅を得られませんでした。")
+
     fwhm = float(2.0 * math.sqrt(2.0 * math.log(2.0)) * sigma)
     gaussian_area = float(amplitude * sigma * math.sqrt(2.0 * math.pi))
-    direct_area = float(np.sum(y))
-    y_fit_used = amplitude * np.exp(-0.5 * ((x[use] - center) / sigma) ** 2)
-    ss_res = float(np.sum((y[use] - y_fit_used) ** 2))
-    ss_tot = float(np.sum((y[use] - np.mean(y[use])) ** 2))
+    y_after_baseline = np.clip(y_raw[x0:x1] - baseline, 0, None)
+    direct_area = float(np.sum(y_after_baseline))
+    y_fit_used = baseline + amplitude * np.exp(-0.5 * ((x[use] - center) / sigma) ** 2)
+    ss_res = float(np.sum((fit_y - y_fit_used) ** 2))
+    ss_tot = float(np.sum((fit_y - np.mean(fit_y)) ** 2))
     r_squared = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
 
     return PeakFit(

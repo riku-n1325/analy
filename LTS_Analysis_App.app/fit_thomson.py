@@ -72,6 +72,45 @@ def linear_baseline(
     return slope * x + intercept
 
 
+def _least_squares_lm(
+    model,
+    initial: np.ndarray,
+    y: np.ndarray,
+    max_iter: int = 80,
+) -> np.ndarray:
+    params = initial.astype(np.float64).copy()
+    damping = 1e-3
+    best_residual = model(params) - y
+    best_sse = float(np.sum(best_residual**2))
+    for _ in range(max_iter):
+        residual = model(params) - y
+        jac = np.empty((y.size, params.size), dtype=np.float64)
+        for col in range(params.size):
+            step = 1e-5 * (abs(params[col]) + 1.0)
+            shifted = params.copy()
+            shifted[col] += step
+            jac[:, col] = (model(shifted) - model(params)) / step
+        lhs = jac.T @ jac + damping * np.eye(params.size)
+        rhs = -jac.T @ residual
+        try:
+            delta = np.linalg.solve(lhs, rhs)
+        except np.linalg.LinAlgError:
+            break
+        trial = params + delta
+        trial_residual = model(trial) - y
+        trial_sse = float(np.sum(trial_residual**2))
+        if trial_sse < best_sse:
+            params = trial
+            best_sse = trial_sse
+            best_residual = trial_residual
+            damping *= 0.35
+            if np.linalg.norm(delta) < 1e-7 * (np.linalg.norm(params) + 1.0):
+                break
+        else:
+            damping *= 3.0
+    return params
+
+
 def fit_broad_gaussian(
     spectrum: np.ndarray,
     fit_min: int,
@@ -83,6 +122,8 @@ def fit_broad_gaussian(
     median_width: int = 21,
     threshold_fraction: float = 0.15,
     fixed_center: float | None = None,
+    mask_min: int | None = None,
+    mask_max: int | None = None,
 ) -> tuple[ThomsonFit, np.ndarray, np.ndarray, np.ndarray]:
     raw = spectrum.astype(np.float64)
     smooth = moving_median(raw, median_width)
@@ -109,6 +150,8 @@ def fit_broad_gaussian(
     use = y > peak_height * threshold_fraction
     if np.count_nonzero(use) < 8:
         use = y > 0
+    if mask_min is not None and mask_max is not None:
+        use &= ~((x >= mask_min) & (x <= mask_max))
     if np.count_nonzero(use) < 8:
         raise ValueError("Not enough points to fit the Thomson peak.")
 
@@ -138,6 +181,39 @@ def fit_broad_gaussian(
             sigma = float(math.sqrt(-1.0 / (2.0 * a)))
             center = float(peak_x - b / (2.0 * a))
             amplitude = float(math.exp(c - a * (center - peak_x) ** 2))
+
+    fit_x = x[use]
+    fit_y = y[use]
+    if fixed_center is not None:
+        def model(params: np.ndarray) -> np.ndarray:
+            amp, log_sigma = params
+            sigma_value = math.exp(float(log_sigma)) + 1e-12
+            return amp * np.exp(-0.5 * ((fit_x - float(fixed_center)) / sigma_value) ** 2)
+
+        refined = _least_squares_lm(
+            model,
+            np.array([amplitude, math.log(max(sigma, 1e-6))], dtype=np.float64),
+            fit_y,
+        )
+        amplitude = float(refined[0])
+        center = float(fixed_center)
+        sigma = float(math.exp(float(refined[1])) + 1e-12)
+    else:
+        def model(params: np.ndarray) -> np.ndarray:
+            amp, center_value, log_sigma = params
+            sigma_value = math.exp(float(log_sigma)) + 1e-12
+            return amp * np.exp(-0.5 * ((fit_x - center_value) / sigma_value) ** 2)
+
+        refined = _least_squares_lm(
+            model,
+            np.array([amplitude, center, math.log(max(sigma, 1e-6))], dtype=np.float64),
+            fit_y,
+        )
+        amplitude = float(refined[0])
+        center = float(refined[1])
+        sigma = float(math.exp(float(refined[2])) + 1e-12)
+    if amplitude <= 0 or sigma <= 0:
+        raise ValueError("非線形最小二乗フィットで正の振幅・幅を得られませんでした。")
 
     fwhm = float(2.0 * math.sqrt(2.0 * math.log(2.0)) * sigma)
     gaussian_area = float(amplitude * sigma * math.sqrt(2.0 * math.pi))
@@ -257,6 +333,8 @@ def main() -> None:
     parser.add_argument("--baseline-left-max", type=int, default=330)
     parser.add_argument("--baseline-right-min", type=int, default=800)
     parser.add_argument("--baseline-right-max", type=int, default=1000)
+    parser.add_argument("--mask-min", type=int, default=None, help="Excluded inverse-slit range minimum pixel")
+    parser.add_argument("--mask-max", type=int, default=None, help="Excluded inverse-slit range maximum pixel")
     parser.add_argument("--median-width", type=int, default=21)
     parser.add_argument("--threshold-fraction", type=float, default=0.15)
     parser.add_argument("--fixed-center", type=float, default=None, help="Fix Gaussian center, e.g. Rayleigh peak pixel")
@@ -275,6 +353,8 @@ def main() -> None:
         median_width=args.median_width,
         threshold_fraction=args.threshold_fraction,
         fixed_center=args.fixed_center,
+        mask_min=args.mask_min,
+        mask_max=args.mask_max,
     )
 
     out_dir = Path(args.out_dir)
