@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import sys
 import tkinter as tk
 import traceback
@@ -27,7 +28,10 @@ from read_spe import read_spe, save_image_csv, save_spe_like, spectrum_from_imag
 
 
 APP_DIR = Path(__file__).resolve().parent
-SETTINGS_PATH = APP_DIR / "app_settings.json"
+USER_DATA_DIR = Path(os.environ.get("APPDATA", Path.home())) / "LTS_Analysis_App"
+SETTINGS_PATH = USER_DATA_DIR / "app_settings.json"
+LEGACY_SETTINGS_PATH = APP_DIR / "app_settings.json"
+DEFAULT_RESULTS_DIR = Path.home() / "Documents" / "LTS_Analysis_App_Results"
 
 
 def write_summary(path: Path, values: dict[str, tuple[float, str]]) -> None:
@@ -137,7 +141,7 @@ class LtsAnalysisApp(tk.Tk):
         self.raman_path = tk.StringVar(value=str(default_raman) if default_raman.exists() else "")
         self.raman_start_path = tk.StringVar(value=str(default_raman) if default_raman.exists() else "")
         self.raman_end_path = tk.StringVar(value=str(default_raman) if default_raman.exists() else "")
-        self.out_dir = tk.StringVar(value=str(APP_DIR))
+        self.out_dir = tk.StringVar(value=str(DEFAULT_RESULTS_DIR))
 
         self.y_min = tk.StringVar(value="600")
         self.y_max = tk.StringVar(value="970")
@@ -191,7 +195,7 @@ class LtsAnalysisApp(tk.Tk):
         self.pressure_signal_kind = tk.StringVar(value="amplitude")
         self.pressure_rows: list[tuple[Path, tk.StringVar]] = []
 
-        self.subtract_out_dir = tk.StringVar(value=str(APP_DIR))
+        self.subtract_out_dir = tk.StringVar(value=str(DEFAULT_RESULTS_DIR))
         self.subtract_save_csv = tk.BooleanVar(value=True)
         self.subtract_save_spe = tk.BooleanVar(value=True)
         self.subtract_total_path = tk.StringVar(value="")
@@ -314,10 +318,11 @@ class LtsAnalysisApp(tk.Tk):
         }
 
     def _load_settings(self) -> None:
-        if not SETTINGS_PATH.exists():
+        settings_path = SETTINGS_PATH if SETTINGS_PATH.exists() else LEGACY_SETTINGS_PATH
+        if not settings_path.exists():
             return
         try:
-            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
         except Exception:
             return
 
@@ -339,6 +344,7 @@ class LtsAnalysisApp(tk.Tk):
         self._pending_geometry = str(data.get("geometry", ""))
 
     def _save_settings(self) -> None:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "values": {name: var.get() for name, var in self._settings_vars().items()},
             "booleans": {name: bool(var.get()) for name, var in self._settings_bools().items()},
